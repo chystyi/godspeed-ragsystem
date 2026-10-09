@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto';
 import { createClient, type SupabaseClient } from '@supabase/supabase-js';
 
 export interface LiveUser {
@@ -11,8 +12,9 @@ export interface LiveUser {
 export class LiveUsers {
   readonly admin: SupabaseClient;
   private readonly ids: string[] = [];
-  private readonly run = Date.now();
-  private readonly password = `Pw-${Date.now()}-aA1!`;
+  // Unique per instance: spec files run in parallel and must not collide on e-mail addresses.
+  private readonly run = randomUUID().slice(0, 8);
+  private readonly password = `Pw-${randomUUID()}-aA1!`;
 
   constructor(
     private readonly url: string,

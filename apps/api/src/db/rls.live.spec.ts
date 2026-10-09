@@ -102,6 +102,13 @@ describe.skipIf(!live)('database isolation and retrieval (live)', () => {
     expect(error?.code).toBe('42501'); // row-level security violation
   });
 
+  it('runs the migrated version of match_chunks (no drift between database and repository)', async () => {
+    const [row] = (await sql(
+      "select prosrc like '%iterative_scan%' as iterative from pg_proc where proname = 'match_chunks'",
+    )) as { iterative: boolean }[];
+    expect(row.iterative).toBe(true);
+  });
+
   it('indexes chunks atomically and retrieves them by similarity', async () => {
     const indexed = await alice.rpc('replace_document_chunks', {
       p_document_id: docId,
@@ -252,6 +259,40 @@ describe.skipIf(!live)('database isolation and retrieval (live)', () => {
     expect(forged.error).not.toBeNull();
     const edited = await alice.from('messages').update({ content: 'changed' }).eq('id', msg.data.id).select();
     expect(edited.data).toEqual([]); // no update policy: history cannot be rewritten
+  });
+
+  it('stores a question and its answer together, in order, and names the conversation', async () => {
+    const conv = (await alice.from('conversations').insert({}).select().single()).data!;
+    const { data, error } = await alice.rpc('append_exchange', {
+      p_conversation_id: conv.id,
+      p_user_content: 'question?',
+      p_assistant_content: 'answer [1]',
+      p_sources: [{ number: 1 }],
+      p_new_title: 'question?',
+    });
+    expect(error).toBeNull();
+    expect(data.map((m: { role: string }) => m.role)).toEqual(['user', 'assistant']);
+    expect(data[1].sources).toEqual([{ number: 1 }]);
+    const stored = await alice.from('messages').select('role, seq').eq('conversation_id', conv.id).order('seq');
+    expect(stored.data?.map((m) => m.role)).toEqual(['user', 'assistant']);
+    const renamed = await alice.from('conversations').select('title').eq('id', conv.id).single();
+    expect(renamed.data?.title).toBe('question?');
+  });
+
+  it("refuses to write an exchange into another user's conversation", async () => {
+    const conv = (await alice.from('conversations').insert({}).select().single()).data!;
+    const { error } = await bob.rpc('append_exchange', {
+      p_conversation_id: conv.id,
+      p_user_content: 'intruder',
+      p_assistant_content: 'x',
+      p_sources: [],
+    });
+    expect(error?.code).toBe('P0002');
+    const { count } = await admin
+      .from('messages')
+      .select('id', { count: 'exact', head: true })
+      .eq('conversation_id', conv.id);
+    expect(count).toBe(0);
   });
 
   it('removes chunks together with their document', async () => {
