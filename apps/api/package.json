@@ -24,12 +24,14 @@
     "dev": "nest start --watch"
   },
   "dependencies": {
+    "@kb/shared": "*",
     "@nestjs/common": "^12.0.1",
     "@nestjs/core": "^12.0.1",
     "@nestjs/platform-express": "^12.0.1",
+    "openai": "^7.31.0",
     "reflect-metadata": "^0.2.2",
     "rxjs": "^7.8.1",
-    "@kb/shared": "*"
+    "zod": "^4.6.5"
   },
   "devDependencies": {
     "@nestjs/cli": "^12.0.0",
