@@ -1,12 +1,10 @@
 import { Controller, Get } from '@nestjs/common';
-import { AppService } from './app.service.js';
 
-@Controller()
+@Controller('api')
 export class AppController {
-  constructor(private readonly appService: AppService) {}
-
-  @Get()
-  getHello(): string {
-    return this.appService.getHello();
+  /** Liveness probe: answers without touching the database or the AI provider. */
+  @Get('health')
+  health(): { status: 'ok' } {
+    return { status: 'ok' };
   }
 }

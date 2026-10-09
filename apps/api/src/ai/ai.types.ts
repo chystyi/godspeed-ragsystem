@@ -41,6 +41,8 @@ export interface EmbeddingResult {
 }
 
 export interface EmbeddingModel {
+  /** Model name as sent to the provider; stored with every vector. */
+  readonly model: string;
   /** Size of every returned vector; must match the vector column in the database. */
   readonly dimensions: number;
   embed(texts: string[]): Promise<EmbeddingResult>;

@@ -132,6 +132,7 @@ export function createEmbeddingModel(config: EmbeddingConfig): EmbeddingModel {
   }
 
   return {
+    model: config.model,
     dimensions: config.dimensions,
     async embed(texts: string[]): Promise<EmbeddingResult> {
       if (texts.some((text) => text.trim() === '')) {
