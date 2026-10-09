@@ -28,11 +28,48 @@ export type UpdateDocumentInput = Partial<CreateDocumentInput>;
 
 export type ChatRole = "user" | "assistant";
 
+/** A passage of the user's documents that an answer was based on. */
+export interface ChatSource {
+  /** Position in the prompt; the answer cites it as [number]. */
+  number: number;
+  documentId: string;
+  chunkId: string;
+  documentTitle: string;
+  chunkIndex: number;
+  similarity: number;
+  /** Beginning of the passage, for display. */
+  snippet: string;
+  /** Whether the answer actually refers to this source. */
+  cited: boolean;
+}
+
 export interface ChatMessage {
   id: string;
   role: ChatRole;
   content: string;
+  /** Only on assistant messages. */
+  sources: ChatSource[] | null;
   createdAt: string;
+}
+
+export interface Conversation {
+  id: string;
+  title: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface ConversationWithMessages extends Conversation {
+  messages: ChatMessage[];
+}
+
+export interface SendMessageInput {
+  content: string;
+}
+
+export interface SendMessageResult {
+  userMessage: ChatMessage;
+  assistantMessage: ChatMessage;
 }
 
 /** Shape of every error response of the API. */

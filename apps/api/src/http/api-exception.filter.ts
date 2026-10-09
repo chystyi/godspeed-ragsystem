@@ -2,6 +2,7 @@ import { type ArgumentsHost, Catch, type ExceptionFilter, HttpException, Logger 
 import type { ApiError } from '@kb/shared';
 import type { Response } from 'express';
 import { AiProviderError } from '../ai/errors.js';
+import { ConversationNotFoundError } from '../chat/chat.repository.js';
 import { DocumentNotFoundError } from '../documents/errors.js';
 import { ValidationFailedError } from './validation.js';
 
@@ -39,6 +40,9 @@ export class ApiExceptionFilter implements ExceptionFilter {
     }
     if (exception instanceof DocumentNotFoundError) {
       return { status: 404, body: { code: 'document_not_found', message: 'document not found' } };
+    }
+    if (exception instanceof ConversationNotFoundError) {
+      return { status: 404, body: { code: 'conversation_not_found', message: 'conversation not found' } };
     }
     if (exception instanceof AiProviderError) {
       return this.mapAiError(exception);

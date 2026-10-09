@@ -13,7 +13,8 @@ import {
 import { AuthGuard } from '../auth/auth.guard.js';
 import type { AuthUser } from '../auth/auth.types.js';
 import { CurrentUser } from '../auth/current-user.decorator.js';
-import { DocumentIdPipe, ZodPipe } from '../http/validation.js';
+import { UuidPipe, ZodPipe } from '../http/validation.js';
+import { DocumentNotFoundError } from './errors.js';
 import {
   type CreateDocumentDto,
   createDocumentSchema,
@@ -21,6 +22,8 @@ import {
   updateDocumentSchema,
 } from './documents.schemas.js';
 import { DocumentsService } from './documents.service.js';
+
+const documentId = new UuidPipe((id) => new DocumentNotFoundError(id));
 
 @Controller('api/documents')
 @UseGuards(AuthGuard)
@@ -42,14 +45,14 @@ export class DocumentsController {
   }
 
   @Get(':id')
-  get(@CurrentUser() user: AuthUser, @Param('id', DocumentIdPipe) id: string): Promise<KbDocument> {
+  get(@CurrentUser() user: AuthUser, @Param('id', documentId) id: string): Promise<KbDocument> {
     return this.documents.get(user, id);
   }
 
   @Patch(':id')
   update(
     @CurrentUser() user: AuthUser,
-    @Param('id', DocumentIdPipe) id: string,
+    @Param('id', documentId) id: string,
     @Body(new ZodPipe(updateDocumentSchema)) body: UpdateDocumentDto,
   ): Promise<KbDocument> {
     return this.documents.update(user, id, body);
@@ -57,13 +60,13 @@ export class DocumentsController {
 
   @Delete(':id')
   @HttpCode(204)
-  remove(@CurrentUser() user: AuthUser, @Param('id', DocumentIdPipe) id: string): Promise<void> {
+  remove(@CurrentUser() user: AuthUser, @Param('id', documentId) id: string): Promise<void> {
     return this.documents.remove(user, id);
   }
 
   @Post(':id/reindex')
   @HttpCode(200)
-  reindex(@CurrentUser() user: AuthUser, @Param('id', DocumentIdPipe) id: string): Promise<KbDocument> {
+  reindex(@CurrentUser() user: AuthUser, @Param('id', documentId) id: string): Promise<KbDocument> {
     return this.documents.reindex(user, id);
   }
 }

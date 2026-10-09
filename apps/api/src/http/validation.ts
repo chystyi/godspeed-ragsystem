@@ -1,6 +1,5 @@
-import { type ArgumentMetadata, Injectable, type PipeTransform } from '@nestjs/common';
+import type { ArgumentMetadata, PipeTransform } from '@nestjs/common';
 import type { z } from 'zod';
-import { DocumentNotFoundError } from '../documents/errors.js';
 
 export interface FieldIssue {
   path: string;
@@ -34,11 +33,15 @@ export class ZodPipe<T extends z.ZodType> implements PipeTransform {
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
-/** A malformed id is "not found", same as an unknown or foreign one: no information leaks. */
-@Injectable()
-export class DocumentIdPipe implements PipeTransform<string, string> {
+/**
+ * A malformed id is "not found", exactly like an unknown or foreign one: no information
+ * leaks, and the database never sees a value it would reject with an error.
+ */
+export class UuidPipe implements PipeTransform<string, string> {
+  constructor(private readonly notFound: (id: string) => Error) {}
+
   transform(value: string): string {
-    if (!UUID.test(value)) throw new DocumentNotFoundError(value);
+    if (!UUID.test(value)) throw this.notFound(value);
     return value.toLowerCase();
   }
 }
