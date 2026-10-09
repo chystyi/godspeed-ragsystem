@@ -9,5 +9,9 @@ export default defineConfig({
     globals: true,
     root: './',
     include: ['**/*.spec.ts'],
+    // Many specs start a real NestJS application, which takes seconds on a busy machine
+    // (all live specs run in parallel); the 5 second default made them flaky.
+    testTimeout: 30000,
+    hookTimeout: 30000,
   },
 });
