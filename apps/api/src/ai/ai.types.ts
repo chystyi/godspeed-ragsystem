@@ -22,6 +22,8 @@ export interface TokenUsage {
 export interface ChatOptions {
   temperature?: number;
   maxTokens?: number;
+  /** Cancels the request (e.g. when the user closed the page). */
+  signal?: AbortSignal;
 }
 
 export interface ChatCompletion {
@@ -32,6 +34,11 @@ export interface ChatCompletion {
 
 export interface ChatModel {
   complete(messages: ChatTurn[], options?: ChatOptions): Promise<ChatCompletion>;
+  /**
+   * The answer as it is written, in text parts. Errors before the first part (bad key, rate
+   * limit) and in the middle of the answer are both thrown as AiProviderError.
+   */
+  stream(messages: ChatTurn[], options?: ChatOptions): AsyncIterable<string>;
 }
 
 export interface EmbeddingResult {

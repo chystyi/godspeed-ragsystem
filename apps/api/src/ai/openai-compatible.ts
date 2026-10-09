@@ -61,18 +61,53 @@ export function toAiProviderError(error: unknown, operation: string): AiProvider
   });
 }
 
+function requestBody(model: string, messages: ChatTurn[], options: ChatOptions) {
+  return {
+    model,
+    messages,
+    ...(options.temperature !== undefined && { temperature: options.temperature }),
+    ...(options.maxTokens !== undefined && { max_tokens: options.maxTokens }),
+  };
+}
+
 export function createChatModel(config: ChatConfig): ChatModel {
   const sdk = client(config);
   return {
+    async *stream(messages: ChatTurn[], options: ChatOptions = {}): AsyncGenerator<string> {
+      let response: AsyncIterable<OpenAI.Chat.Completions.ChatCompletionChunk>;
+      try {
+        response = await sdk.chat.completions.create(
+          { ...requestBody(config.model, messages, options), stream: true },
+          { signal: options.signal },
+        );
+      } catch (error) {
+        throw toAiProviderError(error, 'chat stream');
+      }
+      let produced = false;
+      try {
+        for await (const chunk of response) {
+          const text = chunk.choices[0]?.delta?.content;
+          if (text) {
+            produced = true;
+            yield text;
+          }
+        }
+      } catch (error) {
+        if (options.signal?.aborted) return; // the caller left on purpose
+        throw toAiProviderError(error, 'chat stream');
+      }
+      if (!produced && !options.signal?.aborted) {
+        throw new AiProviderError('invalid_response', 'chat stream returned no content');
+      }
+    },
+
     async complete(messages: ChatTurn[], options: ChatOptions = {}): Promise<ChatCompletion> {
       let response: OpenAI.Chat.Completions.ChatCompletion;
       try {
-        response = await sdk.chat.completions.create({
-          model: config.model,
-          messages,
-          ...(options.temperature !== undefined && { temperature: options.temperature }),
-          ...(options.maxTokens !== undefined && { max_tokens: options.maxTokens }),
-        });
+        response = await sdk.chat.completions.create(
+          requestBody(config.model, messages, options),
+          { signal: options.signal },
+        );
       } catch (error) {
         throw toAiProviderError(error, 'chat completion');
       }

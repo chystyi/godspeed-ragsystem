@@ -15,7 +15,7 @@ const CODE_BY_STATUS: Record<number, string> = {
   429: 'too_many_requests',
 };
 
-interface Mapped {
+export interface Mapped {
   status: number;
   body: ApiError;
 }
@@ -31,7 +31,8 @@ export class ApiExceptionFilter implements ExceptionFilter {
     response.status(status).json(body);
   }
 
-  private map(exception: unknown): Mapped {
+  /** What the client should see for any error (also used when a stream is already open). */
+  map(exception: unknown): Mapped {
     if (exception instanceof ValidationFailedError) {
       return {
         status: 422,

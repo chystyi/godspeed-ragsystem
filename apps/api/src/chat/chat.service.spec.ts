@@ -7,6 +7,7 @@ import type { AuthUser } from '../auth/auth.types.js';
 import type { ChatConfig } from './chat.config.js';
 import { ConversationNotFoundError, type RetrievedChunk } from './chat.repository.js';
 import { ChatService, NO_ANSWER_TEXT } from './chat.service.js';
+import type { ChatStreamEvent } from '@kb/shared';
 
 class FakeChat implements ChatModel {
   calls: ChatTurn[][] = [];
@@ -16,6 +17,21 @@ class FakeChat implements ChatModel {
     const next = this.replies.shift() ?? 'default answer';
     if (next instanceof Error) throw next;
     return { content: next, model: 'fake/chat' };
+  }
+
+  streamCalls: ChatTurn[][] = [];
+  /** Parts of the next streamed answer; an Error in the list is thrown at that point. */
+  script: (string | Error)[] | undefined;
+  onPart: ((index: number) => void) | undefined;
+  async *stream(messages: ChatTurn[]): AsyncGenerator<string> {
+    this.streamCalls.push(messages);
+    const parts = this.script ?? [this.replies.shift() ?? 'default answer'];
+    this.script = undefined;
+    for (const [i, part] of parts.entries()) {
+      if (part instanceof Error) throw part;
+      this.onPart?.(i);
+      yield part;
+    }
   }
 }
 
@@ -262,5 +278,129 @@ describe('conversations', () => {
     await svc.deleteConversation(alice, first.id);
     expect((await svc.listConversations(alice)).map((c) => c.id)).toEqual([second.id]);
     expect(db.messages).toHaveLength(0);
+  });
+});
+
+
+describe('askStream', () => {
+  async function collect(svc: ChatService, question: string, id: string, signal?: AbortSignal) {
+    const events: ChatStreamEvent[] = [];
+    for await (const event of svc.askStream(alice, id, question, signal)) events.push(event);
+    return events;
+  }
+
+  it('emits start (sources), the text parts and done (stored messages), in that order', async () => {
+    db.corpus = [chunk(1, 0.8), chunk(2, 0.5)];
+    chat.script = ['It is ', 'in the first ', 'passage [1].'];
+    const svc = service();
+    const conversation = await start(svc);
+    const events = await collect(svc, 'Where is it?', conversation.id);
+
+    expect(events.map((e) => e.type)).toEqual(['start', 'delta', 'delta', 'delta', 'done']);
+    const startEvent = events[0] as Extract<ChatStreamEvent, { type: 'start' }>;
+    expect(startEvent.sources.map((s) => [s.number, s.cited])).toEqual([[1, false], [2, false]]);
+    const text = events.filter((e) => e.type === 'delta').map((e) => (e as { text: string }).text).join('');
+    expect(text).toBe('It is in the first passage [1].');
+    const done = events.at(-1) as Extract<ChatStreamEvent, { type: 'done' }>;
+    expect(done.assistantMessage.content).toBe(text);
+    expect(done.assistantMessage.sources?.map((s) => s.cited)).toEqual([true, false]); // known only now
+    expect(done.userMessage.content).toBe('Where is it?');
+  });
+
+  it('stores nothing until the answer is complete', async () => {
+    db.corpus = [chunk(1, 0.8)];
+    chat.script = ['a', 'b', 'c'];
+    const svc = service();
+    const conversation = await start(svc);
+    const seenWhileStreaming: number[] = [];
+    chat.onPart = () => seenWhileStreaming.push(db.messages.length);
+    await collect(svc, 'q', conversation.id);
+    expect(seenWhileStreaming).toEqual([0, 0, 0]);
+    expect(db.messages).toHaveLength(2);
+  });
+
+  it('answers a question with nothing related as a one-part stream, without the model', async () => {
+    db.corpus = [];
+    const svc = service();
+    const conversation = await start(svc);
+    const events = await collect(svc, 'Capital of France?', conversation.id);
+    expect(events.map((e) => e.type)).toEqual(['start', 'delta', 'done']);
+    expect((events[1] as { text: string }).text).toBe(NO_ANSWER_TEXT);
+    expect(chat.streamCalls).toHaveLength(0);
+  });
+
+  it('fails with a normal error, before any event, when the provider rejects the request', async () => {
+    db.corpus = [chunk(1, 0.8)];
+    chat.script = [new AiProviderError('rate_limited', 'slow down', 429)];
+    const svc = service();
+    const conversation = await start(svc);
+    const events: ChatStreamEvent[] = [];
+    await expect(
+      (async () => {
+        for await (const event of svc.askStream(alice, conversation.id, 'q')) events.push(event);
+      })(),
+    ).rejects.toBeInstanceOf(AiProviderError);
+    expect(events).toEqual([]);
+    expect(db.messages).toHaveLength(0);
+  });
+
+  it('saves nothing when the answer breaks off in the middle', async () => {
+    db.corpus = [chunk(1, 0.8)];
+    chat.script = ['half an ', 'answer', new AiProviderError('unavailable', 'connection lost')];
+    const svc = service();
+    const conversation = await start(svc);
+    const events: ChatStreamEvent[] = [];
+    await expect(
+      (async () => {
+        for await (const event of svc.askStream(alice, conversation.id, 'q')) events.push(event);
+      })(),
+    ).rejects.toBeInstanceOf(AiProviderError);
+    expect(events.map((e) => e.type)).toEqual(['start', 'delta', 'delta']);
+    expect(db.messages).toHaveLength(0);
+    expect((await svc.getConversation(alice, conversation.id)).title).toBe('New conversation');
+  });
+
+  it('saves nothing and stops when the caller cancels', async () => {
+    db.corpus = [chunk(1, 0.8)];
+    chat.script = ['one ', 'two ', 'three ', 'four'];
+    const svc = service();
+    const conversation = await start(svc);
+    const controller = new AbortController();
+    const events: ChatStreamEvent[] = [];
+    for await (const event of svc.askStream(alice, conversation.id, 'q', controller.signal)) {
+      events.push(event);
+      if (event.type === 'delta' && events.length === 2) controller.abort();
+    }
+    expect(events.some((e) => e.type === 'done')).toBe(false);
+    expect(db.messages).toHaveLength(0);
+  });
+
+  it('refuses a foreign conversation before doing any work', async () => {
+    const svc = service();
+    const conversation = await start(svc);
+    const bob: AuthUser = { id: 'bob', token: 'bob' };
+    await expect(
+      (async () => {
+        for await (const _ of svc.askStream(bob, conversation.id, 'q')) {
+          /* no events expected */
+        }
+      })(),
+    ).rejects.toBeInstanceOf(ConversationNotFoundError);
+    expect(embedder.queries).toEqual([]);
+  });
+
+  it('uses the conversation history and the rewritten search query like the plain answer', async () => {
+    db.corpus = [chunk(1, 0.8)];
+    const svc = service();
+    const conversation = await start(svc);
+    await svc.ask(alice, conversation.id, 'Tell me about the router');
+    chat.calls.length = 0;
+    embedder.queries.length = 0;
+    chat.replies = ['standalone query'];
+    chat.script = ['ok [1]'];
+    await collect(svc, 'and how do I turn it off?', conversation.id);
+    expect(embedder.queries).toEqual(['standalone query']);
+    expect(chat.streamCalls[0].map((m) => m.role)).toEqual(['system', 'user', 'assistant', 'user']);
+    expect(chat.streamCalls[0].at(-1)!.content).toContain('Question: and how do I turn it off?');
   });
 });

@@ -1,6 +1,9 @@
 import type { INestApplication } from '@nestjs/common';
 import { Logger } from '@nestjs/common';
 import { Test } from '@nestjs/testing';
+import { request as nodeRequest } from 'node:http';
+import type { AddressInfo } from 'node:net';
+import type { ChatStreamEvent } from '@kb/shared';
 import request from 'supertest';
 import { afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { InMemoryChatDatabase } from '../../test/in-memory-chat.js';
@@ -22,9 +25,28 @@ import { RATE_LIMITER, RateLimitGuard, SlidingWindowLimiter } from './rate-limit
 
 class FakeChat implements ChatModel {
   reply: string | Error = 'The answer [1].';
+  /** Parts of a streamed answer; an Error is thrown at that point. Defaults to `reply`. */
+  parts: (string | Error)[] | undefined;
+  partDelayMs = 0;
+  /** True once the streamed answer was finished or abandoned (the provider stream was closed). */
+  streamClosed = false;
   async complete(): Promise<ChatCompletion> {
     if (this.reply instanceof Error) throw this.reply;
     return { content: this.reply, model: 'fake' };
+  }
+
+  async *stream(): AsyncGenerator<string> {
+    this.streamClosed = false;
+    try {
+      const parts = this.parts ?? [this.reply];
+      for (const part of parts) {
+        if (this.partDelayMs) await new Promise((r) => setTimeout(r, this.partDelayMs));
+        if (part instanceof Error) throw part;
+        yield part;
+      }
+    } finally {
+      this.streamClosed = true;
+    }
   }
 }
 
@@ -247,5 +269,142 @@ describe('rate limit', () => {
     for (let i = 0; i < 5; i++) {
       expect((await http().get('/api/conversations').set(as('alice'))).status).toBe(200);
     }
+  });
+});
+
+
+describe('streaming answers (server-sent events)', () => {
+  /** Reads the whole body as text and splits it into the events of the stream. */
+  const streamOf = (id: string, user: string, content: unknown) =>
+    http()
+      .post(`/api/conversations/${id}/messages/stream`)
+      .set(as(user))
+      .send({ content })
+      .buffer(true)
+      .parse((res, callback) => {
+        let data = '';
+        res.on('data', (part: Buffer) => (data += part.toString()));
+        res.on('end', () => callback(null, data));
+      });
+  const eventsOf = (res: { body: unknown }): ChatStreamEvent[] =>
+    String(res.body)
+      .split('\n\n')
+      .filter((block) => block.trim() !== '')
+      .map((block) => {
+        const lines = block.split('\n');
+        const name = lines.find((l) => l.startsWith('event: '))!.slice(7);
+        const event = JSON.parse(lines.find((l) => l.startsWith('data: '))!.slice(6)) as ChatStreamEvent;
+        expect(event.type).toBe(name); // the SSE event name and the payload agree
+        return event;
+      });
+
+  it('streams start, text parts and done, with SSE headers', async () => {
+    chat.parts = ['The ', 'answer ', '[1].'];
+    const { id } = await newConversation();
+    const res = await streamOf(id, 'alice', 'How do I secure the router?');
+    expect(res.status).toBe(200);
+    expect(res.headers['content-type']).toMatch(/^text\/event-stream/);
+    expect(res.headers['cache-control']).toMatch(/no-cache/);
+    expect(res.headers['x-accel-buffering']).toBe('no');
+
+    const events = eventsOf(res);
+    expect(events.map((e) => e.type)).toEqual(['start', 'delta', 'delta', 'delta', 'done']);
+    const done = events.at(-1) as Extract<ChatStreamEvent, { type: 'done' }>;
+    expect(done.assistantMessage.content).toBe('The answer [1].');
+    expect(done.assistantMessage.sources?.[0]).toMatchObject({ documentTitle: 'Router guide', cited: true });
+
+    const stored = await http().get(`/api/conversations/${id}`).set(as('alice'));
+    expect(stored.body.messages.map((m: { content: string }) => m.content)).toEqual([
+      'How do I secure the router?',
+      'The answer [1].',
+    ]);
+  });
+
+  it.each([
+    ['without a token', () => http().post('/api/conversations/x/messages/stream').send({ content: 'q' }), 401, 'unauthorized'],
+  ])('answers %s with a normal JSON error', async (_n, call, status, code) => {
+    const res = await call();
+    expect(res.status).toBe(status);
+    expect(res.body.code).toBe(code);
+  });
+
+  it('reports problems found before the stream starts as normal JSON errors', async () => {
+    const { id } = await newConversation('alice');
+    const foreign = await streamOf(id, 'bob', 'hi');
+    expect(foreign.status).toBe(404);
+    expect(JSON.parse(String(foreign.body)).code).toBe('conversation_not_found');
+    const blank = await streamOf(id, 'alice', '   ');
+    expect(blank.status).toBe(422);
+    const malformed = await streamOf('nope', 'alice', 'hi');
+    expect(malformed.status).toBe(404);
+    expect(db.messages).toHaveLength(0);
+  });
+
+  it('turns a provider that rejects the request into a normal 429/503, not a broken stream', async () => {
+    const { id } = await newConversation();
+    chat.parts = [new AiProviderError('rate_limited', 'internal sk-secret detail', 429)];
+    const limited = await streamOf(id, 'alice', 'q');
+    expect(limited.status).toBe(429);
+    expect(JSON.parse(String(limited.body)).code).toBe('ai_rate_limited');
+    expect(String(limited.body)).not.toContain('sk-secret');
+    chat.parts = [new AiProviderError('unavailable', 'down', 503)];
+    expect((await streamOf(id, 'alice', 'q')).status).toBe(503);
+    expect(db.messages).toHaveLength(0);
+  });
+
+  it('ends with an error event, saves nothing, and hides details when the answer breaks off', async () => {
+    const { id } = await newConversation();
+    chat.parts = ['half ', new AiProviderError('unavailable', 'connection lost sk-secret', 503)];
+    const res = await streamOf(id, 'alice', 'q');
+    expect(res.status).toBe(200); // the stream had already started
+    const events = eventsOf(res);
+    expect(events.map((e) => e.type)).toEqual(['start', 'delta', 'error']);
+    expect(events.at(-1)).toEqual({ type: 'error', code: 'ai_unavailable', message: expect.any(String) });
+    expect(String(res.body)).not.toContain('sk-secret');
+    expect(db.messages).toHaveLength(0);
+  });
+
+  it('stops the provider stream and saves nothing when the client disconnects', async () => {
+    const server = app.getHttpServer().listen(0);
+    const { port } = server.address() as AddressInfo;
+    const { id } = await newConversation();
+    chat.parts = Array.from({ length: 40 }, (_, i) => `part ${i} `);
+    chat.partDelayMs = 25;
+
+    await new Promise<void>((resolve, reject) => {
+      const req = nodeRequest(
+        {
+          port,
+          method: 'POST',
+          path: `/api/conversations/${id}/messages/stream`,
+          headers: { ...as('alice'), 'Content-Type': 'application/json' },
+        },
+        (res) => {
+          res.once('data', () => {
+            req.destroy(); // the user closed the page after the first bytes
+            resolve();
+          });
+        },
+      );
+      req.on('error', () => undefined);
+      req.on('error', reject);
+      req.end(JSON.stringify({ content: 'q' }));
+    });
+
+    await new Promise((r) => setTimeout(r, 400));
+    expect(chat.streamClosed).toBe(true);
+    expect(db.messages).toHaveLength(0);
+    server.close();
+  });
+
+  it('counts streamed questions against the same limit as plain ones', async () => {
+    await app.close();
+    app = await build(2);
+    const { id } = await newConversation();
+    expect((await send(id, 'alice', 'one')).status).toBe(201);
+    expect((await streamOf(id, 'alice', 'two')).status).toBe(200);
+    const refused = await streamOf(id, 'alice', 'three');
+    expect(refused.status).toBe(429);
+    expect(JSON.parse(String(refused.body)).code).toBe('too_many_requests');
   });
 });

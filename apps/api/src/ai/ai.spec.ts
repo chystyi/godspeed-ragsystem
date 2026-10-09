@@ -4,6 +4,7 @@ import {
   chatReply,
   embeddingReply,
   errorReply,
+  streamReply,
 } from '../../test/fake-openai-server.js';
 import { AiProviderError } from './errors.js';
 import { createChatModel, createEmbeddingModel } from './openai-compatible.js';
@@ -221,5 +222,79 @@ describe('embedding model', () => {
       .embed(['a'])
       .catch((e: unknown) => e);
     expect((error as AiProviderError).kind).toBe('rate_limited');
+  });
+});
+
+
+describe('chat streaming', () => {
+  const collect = async (iterable: AsyncIterable<string>) => {
+    const parts: string[] = [];
+    for await (const part of iterable) parts.push(part);
+    return parts;
+  };
+  const question = [{ role: 'user' as const, content: 'hi' }];
+
+  it('yields the text parts in order and asks the provider for a stream', async () => {
+    server.setHandler(() => streamReply(['Hel', 'lo ', 'world']));
+    const parts = await collect(createChatModel(chatConfig()).stream(question, { temperature: 0.1 }));
+    expect(parts).toEqual(['Hel', 'lo ', 'world']);
+    expect(server.requests[0].body).toMatchObject({ stream: true, model: 'test/chat-model', temperature: 0.1 });
+    expect(server.requests[0].headers.authorization).toBe(`Bearer ${SECRET}`);
+  });
+
+  it('skips chunks without text (role announcement, finish marker)', async () => {
+    server.setHandler(() => streamReply(['a', '', 'b']));
+    expect(await collect(createChatModel(chatConfig()).stream(question))).toEqual(['a', 'b']);
+  });
+
+  it.each([
+    [401, 'authentication'],
+    [429, 'rate_limited'],
+    [503, 'unavailable'],
+    [400, 'bad_request'],
+  ] as const)('reports HTTP %i before the stream starts as "%s"', async (status, kind) => {
+    server.setHandler(() => errorReply(status, 'nope'));
+    const error = await collect(createChatModel(chatConfig()).stream(question)).catch((e: unknown) => e);
+    expect(error).toBeInstanceOf(AiProviderError);
+    expect((error as AiProviderError).kind).toBe(kind);
+  });
+
+  it('reports a connection lost in the middle of the answer', async () => {
+    server.setHandler(() => streamReply(['one', 'two', 'three'], { cutAfter: 3, delayMs: 40 }));
+    const seen: string[] = [];
+    const error = await (async () => {
+      try {
+        for await (const part of createChatModel(chatConfig()).stream(question)) seen.push(part);
+      } catch (e) {
+        return e;
+      }
+    })();
+    expect(seen).toEqual(['one', 'two']); // what arrived before the cut was delivered
+    expect(error).toBeInstanceOf(AiProviderError);
+    expect((error as AiProviderError).kind).toBe('unavailable');
+  });
+
+  it('rejects an answer that has no text at all', async () => {
+    server.setHandler(() => streamReply([]));
+    const error = await collect(createChatModel(chatConfig()).stream(question)).catch((e: unknown) => e);
+    expect((error as AiProviderError).kind).toBe('invalid_response');
+  });
+
+  it('stops reading when the caller cancels', async () => {
+    server.setHandler(() => streamReply(Array.from({ length: 50 }, (_, i) => `p${i} `), { delayMs: 20 }));
+    const controller = new AbortController();
+    const seen: string[] = [];
+    for await (const part of createChatModel(chatConfig()).stream(question, { signal: controller.signal })) {
+      seen.push(part);
+      if (seen.length === 2) controller.abort();
+    }
+    expect(seen.length).toBeLessThan(10);
+  });
+
+  it('never leaks the API key into stream errors', async () => {
+    server.setHandler(() => errorReply(401, 'invalid key'));
+    const error = (await collect(createChatModel(chatConfig()).stream(question)).catch((e: unknown) => e)) as AiProviderError;
+    expect(JSON.stringify(error)).not.toContain(SECRET);
+    expect(error.message).not.toContain(SECRET);
   });
 });

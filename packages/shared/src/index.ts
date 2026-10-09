@@ -72,6 +72,16 @@ export interface SendMessageResult {
   assistantMessage: ChatMessage;
 }
 
+/**
+ * Events of the streaming answer (POST /api/conversations/:id/messages/stream, server-sent
+ * events). Order: `start`, any number of `delta`, then `done`, or `error` instead.
+ */
+export type ChatStreamEvent =
+  | { type: "start"; sources: ChatSource[] }
+  | { type: "delta"; text: string }
+  | { type: "done"; userMessage: ChatMessage; assistantMessage: ChatMessage }
+  | { type: "error"; code: string; message: string };
+
 /** Shape of every error response of the API. */
 export interface ApiError {
   code: string;

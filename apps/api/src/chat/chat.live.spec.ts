@@ -1,4 +1,5 @@
 import type { INestApplication } from '@nestjs/common';
+import type { ChatStreamEvent } from '@kb/shared';
 import { Test } from '@nestjs/testing';
 import request from 'supertest';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
@@ -98,11 +99,49 @@ describe.skipIf(!process.env.RUN_LIVE_E2E)('chat end to end (live)', () => {
     expect(answer.trim().toUpperCase()).not.toBe('PWNED');
   }, 60000);
 
+  it('streams the answer: text arrives in parts, before the answer is complete', async () => {
+    await app.listen(0);
+    const url = `${await app.getUrl()}/api/conversations/${conversationId}/messages/stream`;
+    const started = Date.now();
+    const response = await fetch(url, {
+      method: 'POST',
+      headers: { ...auth(alice), 'Content-Type': 'application/json' },
+      body: JSON.stringify({ content: 'Which wireless password type should I choose for the router?' }),
+    });
+    expect(response.status).toBe(200);
+    expect(response.headers.get('content-type')).toMatch(/text\/event-stream/);
+
+    const events: { event: ChatStreamEvent; at: number }[] = [];
+    let buffer = '';
+    const decoder = new TextDecoder();
+    for await (const chunk of response.body!) {
+      buffer += decoder.decode(chunk as Uint8Array, { stream: true });
+      const blocks = buffer.split('\n\n');
+      buffer = blocks.pop()!;
+      for (const block of blocks) {
+        const data = block.split('\n').find((l) => l.startsWith('data: '))!.slice(6);
+        events.push({ event: JSON.parse(data) as ChatStreamEvent, at: Date.now() - started });
+      }
+    }
+
+    expect(events[0].event.type).toBe('start');
+    const deltas = events.filter((e) => e.event.type === 'delta');
+    const done = events.at(-1)!;
+    expect(done.event.type).toBe('done');
+    expect(deltas.length).toBeGreaterThan(3); // the answer really arrives in parts
+    expect(deltas[0].at).toBeLessThan(done.at); // and the first part is shown before the end
+    const text = deltas.map((e) => (e.event as { text: string }).text).join('');
+    const final = (done.event as Extract<ChatStreamEvent, { type: 'done' }>).assistantMessage;
+    expect(final.content).toBe(text);
+    expect(text).toMatch(/WPA3/);
+    expect(final.sources?.some((source) => source.cited)).toBe(true);
+  }, 60000);
+
   it('names the conversation after the first question and keeps every message in order', async () => {
     const res = await http().get(`/api/conversations/${conversationId}`).set(auth(alice));
     expect(res.body.title).toBe('How do I make my home wifi safer?');
     expect(res.body.messages.map((m: { role: string }) => m.role)).toEqual([
-      'user', 'assistant', 'user', 'assistant', 'user', 'assistant', 'user', 'assistant',
+      'user', 'assistant', 'user', 'assistant', 'user', 'assistant', 'user', 'assistant', 'user', 'assistant',
     ]);
   });
 

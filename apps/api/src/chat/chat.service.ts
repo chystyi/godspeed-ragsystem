@@ -1,6 +1,7 @@
 import type {
   ChatMessage,
   ChatSource,
+  ChatStreamEvent,
   Conversation,
   ConversationWithMessages,
   SendMessageResult,
@@ -9,9 +10,11 @@ import { Inject, Injectable, Logger } from '@nestjs/common';
 import {
   CHAT_MODEL,
   type ChatModel,
+  type ChatTurn,
   EMBEDDING_MODEL,
   type EmbeddingModel,
 } from '../ai/ai.types.js';
+import { AiProviderError } from '../ai/errors.js';
 import type { AuthUser } from '../auth/auth.types.js';
 import { CHAT_CONFIG, type ChatConfig } from './chat.config.js';
 import {
@@ -36,7 +39,17 @@ export const NO_ANSWER_TEXT =
   "I couldn't find anything about that in your documents. Try rephrasing the question, or add a document that covers it.";
 
 const SNIPPET_CHARS = 200;
+const ANSWER_TEMPERATURE = 0.2;
 const MAX_REWRITTEN_QUERY_CHARS = 300;
+
+interface AskContext {
+  repository: ChatRepository;
+  conversationId: string;
+  passages: RetrievedChunk[];
+  messages: ChatTurn[];
+  /** The first question of an untitled conversation becomes its title. */
+  namesConversation: boolean;
+}
 
 @Injectable()
 export class ChatService {
@@ -75,6 +88,62 @@ export class ChatService {
    * fails before the answer exists, nothing is saved and the user can simply ask again.
    */
   async ask(user: AuthUser, conversationId: string, question: string): Promise<SendMessageResult> {
+    const context = await this.prepare(user, conversationId, question);
+    let answer = NO_ANSWER_TEXT;
+    if (context.passages.length > 0) {
+      answer = (await this.chat.complete(context.messages, { temperature: ANSWER_TEMPERATURE })).content;
+    }
+    return this.save(context, question, answer);
+  }
+
+  /**
+   * The same answer, delivered as it is written: `start` (the sources), `delta` parts and
+   * finally `done` with the stored messages. Nothing is stored unless the whole answer
+   * arrived, and a cancelled request (`signal`) ends quietly without saving. Failures are
+   * thrown; one that happens before the first event is a plain error for the caller.
+   */
+  async *askStream(
+    user: AuthUser,
+    conversationId: string,
+    question: string,
+    signal?: AbortSignal,
+  ): AsyncGenerator<ChatStreamEvent> {
+    const context = await this.prepare(user, conversationId, question);
+    const sources = toSources(context.passages, '');
+    let answer = '';
+
+    if (context.passages.length === 0) {
+      answer = NO_ANSWER_TEXT;
+      yield { type: 'start', sources };
+      yield { type: 'delta', text: answer };
+    } else {
+      const parts = this.chat
+        .stream(context.messages, { temperature: ANSWER_TEMPERATURE, signal })
+        [Symbol.asyncIterator]();
+      try {
+        // Wait for the first part before announcing anything: a provider that rejects the
+        // request (bad key, rate limit) then fails like a normal request.
+        const first = await parts.next();
+        if (first.done) throw new AiProviderError('invalid_response', 'chat stream returned no content');
+        yield { type: 'start', sources };
+        answer = first.value;
+        yield { type: 'delta', text: first.value };
+        for (let next = await parts.next(); !next.done; next = await parts.next()) {
+          if (signal?.aborted) break;
+          answer += next.value;
+          yield { type: 'delta', text: next.value };
+        }
+      } finally {
+        await parts.return?.(undefined); // stop the provider stream if we leave early
+      }
+    }
+
+    if (signal?.aborted) return;
+    yield { type: 'done', ...(await this.save(context, question, answer)) };
+  }
+
+  /** Everything both kinds of answer need before the model is called. */
+  private async prepare(user: AuthUser, conversationId: string, question: string): Promise<AskContext> {
     const repository = this.repositories.forUser(user.token);
     const conversation = await this.requireConversation(repository, conversationId);
     const history = await repository.recentMessages(conversationId, this.config.historyMessages);
@@ -87,36 +156,32 @@ export class ChatService {
       this.config.topK,
       this.config.minSimilarity,
     );
-
-    let answer = NO_ANSWER_TEXT;
-    let sources: ChatSource[] = [];
-    if (passages.length > 0) {
-      const completion = await this.chat.complete(
-        buildAnswerMessages({
-          question,
-          history: turns,
-          sources: passages.map((passage, i) => ({
-            number: i + 1,
-            title: passage.documentTitle,
-            content: passage.content,
-          })),
-        }),
-        { temperature: 0.2 },
-      );
-      answer = completion.content;
-      sources = toSources(passages, answer);
-    }
-
-    const isFirstQuestion = history.length === 0;
-    return repository.appendExchange({
+    const messages = buildAnswerMessages({
+      question,
+      history: turns,
+      sources: passages.map((passage, i) => ({
+        number: i + 1,
+        title: passage.documentTitle,
+        content: passage.content,
+      })),
+    });
+    return {
+      repository,
       conversationId,
+      passages,
+      messages,
+      namesConversation:
+        history.length === 0 && conversation.title === DEFAULT_CONVERSATION_TITLE,
+    };
+  }
+
+  private save(context: AskContext, question: string, answer: string): Promise<SendMessageResult> {
+    return context.repository.appendExchange({
+      conversationId: context.conversationId,
       question,
       answer,
-      sources,
-      newTitle:
-        isFirstQuestion && conversation.title === DEFAULT_CONVERSATION_TITLE
-          ? titleFromQuestion(question)
-          : undefined,
+      sources: toSources(context.passages, answer),
+      newTitle: context.namesConversation ? titleFromQuestion(question) : undefined,
     });
   }
 
