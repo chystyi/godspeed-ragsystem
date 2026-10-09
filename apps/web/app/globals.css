@@ -1,26 +1,93 @@
 @import "tailwindcss";
 
-:root {
-  --background: #ffffff;
-  --foreground: #171717;
-}
-
+/*
+ * Warm monochrome with a few washed-out accents. Colour carries meaning (status, errors),
+ * never decoration. Borders are 1px lines; there are no shadows or gradients.
+ */
 @theme inline {
-  --color-background: var(--background);
-  --color-foreground: var(--foreground);
-  --font-sans: var(--font-geist-sans);
-  --font-mono: var(--font-geist-mono);
+  --color-canvas: #fbfbfa;
+  --color-surface: #ffffff;
+  --color-subtle: #f7f6f3;
+  --color-line: #eaeaea;
+  --color-ink: #111111;
+  --color-body: #2f3437;
+  /* Slightly darker than the classic #787774: that one measures 4.3:1 on the canvas, below the 4.5:1 WCAG AA asks for. */
+  --color-muted: #6f6e6a;
+
+  --color-red-wash: #fdebec;
+  --color-red-ink: #9f2f2d;
+  --color-blue-wash: #e1f3fe;
+  --color-blue-ink: #1f6c9f;
+  --color-green-wash: #edf3ec;
+  --color-green-ink: #346538;
+  --color-yellow-wash: #fbf3db;
+  --color-yellow-ink: #956400;
+
+  --font-sans: var(--font-geist-sans), "Helvetica Neue", sans-serif;
+  --font-serif: var(--font-newsreader), "Iowan Old Style", Georgia, serif;
+  --font-mono: var(--font-geist-mono), "SF Mono", monospace;
 }
 
-@media (prefers-color-scheme: dark) {
-  :root {
-    --background: #0a0a0a;
-    --foreground: #ededed;
-  }
+html {
+  font-size: 15px;
 }
 
 body {
-  background: var(--background);
-  color: var(--foreground);
-  font-family: Arial, Helvetica, sans-serif;
+  background: var(--color-canvas);
+  color: var(--color-body);
+  font-family: var(--font-sans);
+  line-height: 1.6;
+}
+
+::selection {
+  background: var(--color-yellow-wash);
+}
+
+:focus-visible {
+  outline: 2px solid var(--color-ink);
+  outline-offset: 2px;
+}
+
+/* Quiet entrance: only transform and opacity are animated. */
+@keyframes rise {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.rise {
+  animation: rise 500ms cubic-bezier(0.16, 1, 0.3, 1) both;
+  animation-delay: calc(var(--index, 0) * 60ms);
+}
+
+@keyframes blink {
+  50% {
+    opacity: 0;
+  }
+}
+
+.caret::after {
+  content: "";
+  display: inline-block;
+  width: 0.5ch;
+  height: 1.05em;
+  margin-left: 2px;
+  vertical-align: text-bottom;
+  background: var(--color-ink);
+  animation: blink 1s steps(1) infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
 }
