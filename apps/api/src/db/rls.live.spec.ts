@@ -1,5 +1,6 @@
 import { createClient, type SupabaseClient } from '@supabase/supabase-js';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { LiveUsers } from '../../test/live-users.js';
 import { loadRootEnv } from '../config/load-env.js';
 
 // Opt-in: runs against the real Supabase project from .env. It creates two throw-away users
@@ -19,26 +20,28 @@ describe.skipIf(!live)('database isolation and retrieval (live)', () => {
   loadRootEnv();
   const url = process.env.SUPABASE_URL!;
   const anonKey = process.env.SUPABASE_ANON_KEY!;
-  const admin = createClient(url, process.env.SUPABASE_SERVICE_ROLE_KEY!, {
-    auth: { persistSession: false },
-  });
+  const users = new LiveUsers(url, anonKey, process.env.SUPABASE_SERVICE_ROLE_KEY!);
+  const admin = users.admin;
   const anon = createClient(url, anonKey, { auth: { persistSession: false } });
-  const run = Date.now();
-  const password = `Pw-${run}-aA1!`;
   let alice: SupabaseClient;
   let bob: SupabaseClient;
   let aliceId = '';
   let bobId = '';
   let docId = '';
 
-  async function signUp(name: string): Promise<{ client: SupabaseClient; id: string }> {
-    const email = `rls-${name}-${run}@example.test`;
-    const created = await admin.auth.admin.createUser({ email, password, email_confirm: true });
-    if (created.error) throw created.error;
-    const client = createClient(url, anonKey, { auth: { persistSession: false } });
-    const signedIn = await client.auth.signInWithPassword({ email, password });
-    if (signedIn.error) throw signedIn.error;
-    return { client, id: created.data.user.id };
+  /** Run SQL as the database owner through the Supabase management API. */
+  async function sql(query: string): Promise<unknown> {
+    const ref = new URL(url).hostname.split('.')[0];
+    const response = await fetch(`https://api.supabase.com/v1/projects/${ref}/database/query`, {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${process.env.SUPABASE_ACCESS_TOKEN}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({ query }),
+    });
+    if (!response.ok) throw new Error(`management API ${response.status}: ${await response.text()}`);
+    return response.json();
   }
 
   const chunks = (n: number) =>
@@ -50,8 +53,8 @@ describe.skipIf(!live)('database isolation and retrieval (live)', () => {
     }));
 
   beforeAll(async () => {
-    ({ client: alice, id: aliceId } = await signUp('alice'));
-    ({ client: bob, id: bobId } = await signUp('bob'));
+    ({ client: alice, id: aliceId } = await users.signUp('alice'));
+    ({ client: bob, id: bobId } = await users.signUp('bob'));
     const inserted = await alice
       .from('documents')
       .insert({ title: 'Alice notes', content: 'secret plans', tags: ['x'] })
@@ -62,8 +65,7 @@ describe.skipIf(!live)('database isolation and retrieval (live)', () => {
   }, 60000);
 
   afterAll(async () => {
-    if (aliceId) await admin.auth.admin.deleteUser(aliceId);
-    if (bobId) await admin.auth.admin.deleteUser(bobId);
+    await users.cleanup();
   }, 60000);
 
   it('fills user_id from the token, so clients cannot forget or fake it', async () => {
@@ -165,6 +167,42 @@ describe.skipIf(!live)('database isolation and retrieval (live)', () => {
     });
     expect(error?.code).toBe('23503'); // foreign key violation
   });
+
+  it('stays complete when the vector index is full of dead entries (worst case)', async () => {
+    // Re-indexing deletes and re-inserts chunks; the approximate index keeps the deleted
+    // entries until VACUUM, and searches on a large table use that index. A plain query on
+    // that index returned 2 of 3 rows here. NOTE: the previous version of match_chunks also
+    // passed this synthetic scenario (its plan differs); the failure it had was seen as
+    // flaky results in repeated live runs, so this guards completeness but does not by itself
+    // prove the fix. Done inside ONE transaction (autovacuum cannot interfere, and
+    // everything is rolled back), as the signed-in user, calling the real function.
+    const user = '00000000-0000-4000-8000-0000000000aa';
+    const doc = '00000000-0000-4000-8000-0000000000bb';
+    const filler = `(select array_agg(case when i = (g % 1000) + 10 then 1 else 0 end)
+                       from generate_series(1, 1536) i)::extensions.vector`;
+    const axisVector = (n: number) => `'${JSON.stringify(axis(n))}'::extensions.vector`;
+    const rows = await sql(`
+      begin;
+      insert into auth.users (id, aud, role, email)
+        values ('${user}', 'authenticated', 'authenticated', 'churn@example.test');
+      -- On a big table the planner searches through the vector index; make it do the same here
+      -- (the DDL is rolled back with the transaction).
+      drop index public.document_chunks_user_idx;
+      set local role authenticated;
+      set local enable_seqscan = off;
+      select set_config('request.jwt.claims', '{"sub":"${user}","role":"authenticated"}', true);
+      insert into public.documents (id, title, content) values ('${doc}', 't', 'c');
+      insert into public.document_chunks (document_id, chunk_index, content, embedding, embedding_model)
+        select '${doc}', g, 'filler', ${filler}, 'm' from generate_series(1, 200) g;
+      delete from public.document_chunks;
+      insert into public.document_chunks (document_id, chunk_index, content, embedding, embedding_model)
+        values ('${doc}', 0, 'a', ${axisVector(0)}, 'm'),
+               ('${doc}', 1, 'b', ${axisVector(1)}, 'm'),
+               ('${doc}', 2, 'c', ${axisVector(2)}, 'm');
+      select count(*)::int as found from public.match_chunks(${axisVector(2)}, 3);
+      rollback;`);
+    expect(rows).toEqual([{ found: 3 }]);
+  }, 60000);
 
   it('replaces chunks instead of piling them up', async () => {
     await alice.rpc('replace_document_chunks', {
