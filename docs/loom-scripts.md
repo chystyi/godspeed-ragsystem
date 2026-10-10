@@ -28,7 +28,7 @@ Two videos, each about 5 minutes. Speak plainly; show, do not read. Before recor
 
 **3:10 — The chat path (90 s).** `chat.service.ts`: rewrite → embed → `match_chunks` → threshold → `prompt.ts` (numbered, escaped sources) → stream. Show the no-answer path that skips the model and the abort signal that cancels the provider call. Show `sse.ts` on the client.
 
-**4:40 — Swapping providers (40 s).** `ai.types.ts` interface, `openai-compatible.ts`, then change `AI_BASE_URL` / model in `.env` live (e.g. to Groq) and ask one question. Mention the embedding-dimension and threshold caveats.
+**4:40 — Swapping providers (40 s).** `ai.types.ts` ports, `openai-compatible.ts`, then change `AI_BASE_URL` / model in `.env` live (e.g. to Groq) and ask one question. Mention the embedding-dimension and threshold caveats.
 
 **5:20 — Testing (40 s).** Run `npm test`. Explain the layers (unit, fake provider HTTP server, in-memory repositories, live suites) and that I verified key tests by breaking the code on purpose.
 

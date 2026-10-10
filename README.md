@@ -65,7 +65,7 @@ Browser ──(Supabase JS)──> Supabase Auth              session, JWT (ES25
 - **NestJS for the API.** Modules, dependency injection and guards make the AI layer, repositories and limits replaceable and testable with fakes.
 - **pgvector in Supabase instead of a separate vector database.** Vectors sit next to the rows they belong to, so row level security covers retrieval too, and one free-tier service replaces three. HNSW with iterative scan keeps filtered searches complete.
 - **Retrieval before generation, with a threshold.** Cheaper and more honest than letting the model decide; unrelated questions cost no tokens.
-- **Provider-agnostic AI layer.** One interface (`embed`, `answer`, `answerStream`) and one adapter for the OpenAI wire format.
+- **Provider-agnostic AI layer.** Two ports (`ChatModel`, `EmbeddingModel`) and one adapter for the OpenAI wire format.
 
 ### Swapping the AI provider
 
@@ -85,7 +85,7 @@ Two things to keep consistent:
 1. `AI_EMBEDDING_DIMENSIONS` must equal the `vector(...)` size in the database (1536 by default). A different size needs a new migration and re-indexing; stored chunks remember which model made them.
 2. `CHAT_MIN_SIMILARITY` depends on the embedding model — re-measure it when you change it.
 
-A provider with its own protocol (Anthropic, Gemini native) needs one new class implementing `AiProvider` in `apps/api/src/ai/ai.types.ts` and a line in `ai.module.ts`.
+A provider with its own protocol (Anthropic, Gemini native) needs a class implementing `ChatModel` and/or `EmbeddingModel` (`apps/api/src/ai/ai.types.ts`) and a change to the factories in `ai.module.ts`.
 
 ## Testing
 
