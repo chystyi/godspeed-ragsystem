@@ -28,6 +28,8 @@ export function describeError(error: unknown): string {
       return "The AI service is not available right now. Try again in a moment.";
     case "ai_error":
       return "The AI service could not answer this time. Try again.";
+    case "limit_reached":
+      return "You have reached the limit for this. Delete something you no longer need and try again.";
     case "payload_too_large":
       return "This is too large to send.";
     case "validation_error":

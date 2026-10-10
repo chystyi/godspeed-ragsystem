@@ -53,7 +53,7 @@ export function useChat({ initialConversationId, onExchangeSaved }: UseChatOptio
       try {
         let id = conversationId;
         if (!id) {
-          id = (await api.createConversation()).id;
+          id = (await api.createConversation(undefined, abort.signal)).id;
           setConversationId(id);
         }
         for await (const event of streamAnswer(id, question, abort.signal)) {
@@ -62,9 +62,12 @@ export function useChat({ initialConversationId, onExchangeSaved }: UseChatOptio
           } else if (event.type === "delta") {
             setPending((current) => (current ? { ...current, answer: current.answer + event.text, status: "streaming" } : current));
           } else if (event.type === "done") {
-            await saved.current(id);
-            // The address changes only now: the first answer is stored, so a reload keeps it.
-            if (!initialConversationId) window.history.replaceState(null, "", `/chat/${id}`);
+            try {
+              await saved.current(id);
+            } catch {
+              // The answer is stored; only refreshing the lists failed. They catch up on their
+              // next refresh, and the person must not be made to ask the same question again.
+            }
             setPending(null);
             return true;
           } else {
@@ -89,7 +92,7 @@ export function useChat({ initialConversationId, onExchangeSaved }: UseChatOptio
         controller.current = null;
       }
     },
-    [conversationId, initialConversationId],
+    [conversationId],
   );
 
   const stop = useCallback(() => controller.current?.abort(), []);

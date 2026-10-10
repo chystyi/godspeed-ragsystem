@@ -2,7 +2,7 @@
 
 import { ArrowLeft, Trash } from "@phosphor-icons/react";
 import Link from "next/link";
-import { useRouter } from "next/navigation";
+import { usePathname, useRouter } from "next/navigation";
 import { useEffect, useRef, useState } from "react";
 import { useSWRConfig } from "swr";
 import { Composer } from "@/components/composer";
@@ -16,16 +16,32 @@ import { ApiRequestError, describeError } from "@/lib/errors";
 import { useConversation, useDocuments } from "@/lib/hooks";
 import { useChat } from "@/lib/use-chat";
 
+interface ChatViewProps {
+  conversationId: string | null;
+  /** Called once the first answer of a conversation that this view created has been saved. */
+  onConversationCreated?: (id: string) => void;
+}
+
 /** A conversation, or (without an id) the empty page where a new one begins. */
-export function ChatView({ conversationId }: { conversationId: string | null }) {
+export function ChatView({ conversationId, onConversationCreated }: ChatViewProps) {
   const router = useRouter();
+  const pathname = usePathname();
   const { mutate } = useSWRConfig();
   const chat = useChat({
     initialConversationId: conversationId,
     onExchangeSaved: async (id) => {
       await Promise.all([mutate(["conversation", id]), mutate("conversations")]);
+      if (conversationId === null) onConversationCreated?.(id);
     },
   });
+
+  // Next.js keeps pages you left alive, so leaving does not unmount this view. An answer still being
+  // written is of no use to someone who has gone elsewhere, and it still costs money: stop it.
+  const leftChat = !(pathname === "/chat" || pathname.startsWith("/chat/"));
+  useEffect(() => {
+    if (leftChat) chat.stop();
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- only the moment of leaving matters
+  }, [leftChat]);
   const { data: conversation, error: loadError, isLoading } = useConversation(chat.conversationId);
   const { data: documents } = useDocuments();
   const [confirming, setConfirming] = useState(false);
@@ -47,6 +63,7 @@ export function ChatView({ conversationId }: { conversationId: string | null }) 
 
   async function remove() {
     if (!chat.conversationId) return;
+    setDeleteError(null);
     setDeleting(true);
     try {
       await api.deleteConversation(chat.conversationId);
@@ -69,7 +86,14 @@ export function ChatView({ conversationId }: { conversationId: string | null }) 
           {conversation?.title ?? "New chat"}
         </h2>
         {conversation && (
-          <IconButton label="Delete conversation" onClick={() => setConfirming(true)} disabled={chat.busy}>
+          <IconButton
+            label="Delete conversation"
+            onClick={() => {
+              setDeleteError(null); // a new attempt starts without the previous failure on screen
+              setConfirming(true);
+            }}
+            disabled={chat.busy}
+          >
             <Trash size={18} weight="bold" aria-hidden />
           </IconButton>
         )}

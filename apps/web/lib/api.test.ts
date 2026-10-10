@@ -3,6 +3,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { api, configureApi, streamAnswer } from "./api";
 import { ApiRequestError, describeError } from "./errors";
 
+const ID = "7d1f0b9e-6c1e-4a54-9c43-0d9a8f6c1111";
+
 const json = (status: number, body: unknown, headers: Record<string, string> = {}) =>
   new Response(JSON.stringify(body), { status, headers: { "Content-Type": "application/json", ...headers } });
 
@@ -35,7 +37,7 @@ describe("requests", () => {
 
   it("treats 204 as success without a body", async () => {
     fetchMock.mockResolvedValue(new Response(null, { status: 204 }));
-    await expect(api.deleteDocument("d1")).resolves.toBeUndefined();
+    await expect(api.deleteDocument(ID)).resolves.toBeUndefined();
   });
 
   it("turns an API error into ApiRequestError with its code and retry time", async () => {
@@ -65,6 +67,54 @@ function sse(events: ChatStreamEvent[]): Response {
   return new Response(text, { status: 200, headers: { "Content-Type": "text/event-stream" } });
 }
 
+describe("identifiers in paths", () => {
+  it("uses valid ids as they are", async () => {
+    fetchMock.mockImplementation(async () => json(200, { id: ID })); // a fresh response per call
+    await api.getDocument(ID);
+    await api.getConversation(ID);
+    expect(fetchMock.mock.calls.map((call) => call[0])).toEqual([
+      `http://api.test/api/documents/${ID}`,
+      `http://api.test/api/conversations/${ID}`,
+    ]);
+  });
+
+  it.each(["../conversations", "..%2Fconversations", "a/b", "id?x=1", "", " ", "not-a-uuid", "1;drop table"])(
+    "refuses %j without sending any request, as a not-found",
+    async (bad) => {
+      for (const call of [
+        () => api.getDocument(bad),
+        () => api.updateDocument(bad, { title: "x" }),
+        () => api.deleteDocument(bad),
+        () => api.reindexDocument(bad),
+        () => api.getConversation(bad),
+        () => api.deleteConversation(bad),
+      ]) {
+        const error = (await call().catch((e: unknown) => e)) as ApiRequestError;
+        expect(error).toBeInstanceOf(ApiRequestError);
+        expect(error.status).toBe(404);
+      }
+      expect(fetchMock).not.toHaveBeenCalled();
+    },
+  );
+
+  it("refuses a malformed conversation id for a streamed answer too", async () => {
+    const error = await (async () => {
+      for await (const _ of streamAnswer("../documents", "q")) void _;
+    })().catch((e: unknown) => e);
+    expect((error as ApiRequestError).code).toBe("conversation_not_found");
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("can cancel the creation of a conversation", async () => {
+    const controller = new AbortController();
+    fetchMock.mockImplementation(async (_url, init) => {
+      expect(init!.signal).toBe(controller.signal);
+      return json(201, { id: ID });
+    });
+    await api.createConversation(undefined, controller.signal);
+  });
+});
+
 describe("streamAnswer", () => {
   const events: ChatStreamEvent[] = [
     { type: "start", sources: [] },
@@ -75,10 +125,10 @@ describe("streamAnswer", () => {
   it("posts the question and yields the events", async () => {
     fetchMock.mockResolvedValue(sse(events));
     const received: ChatStreamEvent[] = [];
-    for await (const event of streamAnswer("c1", "Hello?")) received.push(event);
+    for await (const event of streamAnswer(ID, "Hello?")) received.push(event);
     expect(received).toEqual(events);
     const [url, init] = fetchMock.mock.calls[0];
-    expect(url).toBe("http://api.test/api/conversations/c1/messages/stream");
+    expect(url).toBe(`http://api.test/api/conversations/${ID}/messages/stream`);
     expect(init!.body).toBe(JSON.stringify({ content: "Hello?" }));
     expect(new Headers(init!.headers).get("Accept")).toBe("text/event-stream");
   });
@@ -86,7 +136,7 @@ describe("streamAnswer", () => {
   it("throws a normal error when the answer cannot start", async () => {
     fetchMock.mockResolvedValue(json(503, { code: "ai_unavailable", message: "down" }));
     const error = await (async () => {
-      for await (const _ of streamAnswer("c1", "q")) void _;
+      for await (const _ of streamAnswer(ID, "q")) void _;
     })().catch((e: unknown) => e);
     expect(error).toBeInstanceOf(ApiRequestError);
     expect((error as ApiRequestError).code).toBe("ai_unavailable");
@@ -99,7 +149,7 @@ describe("streamAnswer", () => {
       throw new DOMException("aborted", "AbortError");
     });
     const error = await (async () => {
-      for await (const _ of streamAnswer("c1", "q", controller.signal)) void _;
+      for await (const _ of streamAnswer(ID, "q", controller.signal)) void _;
     })().catch((e: unknown) => e);
     expect((error as Error).name).toBe("AbortError");
   });

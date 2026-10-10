@@ -18,8 +18,9 @@ export function ConversationList() {
     <div className="flex h-full flex-col">
       <div className="flex items-center justify-between gap-2 px-4 pt-5">
         <h1 className="font-serif text-3xl tracking-[-0.02em] text-ink">Chat</h1>
+        {/* Its own address: "/chat" is the list on a phone, so linking there would change nothing. */}
         <Link
-          href="/chat"
+          href="/chat/new"
           className="inline-flex h-9 items-center gap-1.5 rounded-md bg-ink px-3 text-sm font-medium text-white transition duration-150 hover:bg-[#333333] active:scale-[0.98]"
         >
           <Plus size={16} weight="bold" aria-hidden />

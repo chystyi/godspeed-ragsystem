@@ -4,6 +4,7 @@ import { ChatCircleText, FileText, SignOut } from "@phosphor-icons/react";
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
 import { Suspense, useEffect } from "react";
+import { SWRConfig } from "swr";
 import { useAuth } from "@/components/auth-provider";
 import { IconButton } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
@@ -92,7 +93,11 @@ export function AppShell({ children }: { children: React.ReactNode }) {
           </IconButton>
         </div>
       </header>
-      <div className="flex min-h-0 flex-1">{children}</div>
+      {/* Each person gets their own data cache: keyed by user, a new sign-in in the same tab can
+          never show the previous person's lists while the fresh ones load. */}
+      <SWRConfig key={user.id} value={{ provider: () => new Map() }}>
+        <div className="flex min-h-0 flex-1">{children}</div>
+      </SWRConfig>
     </div>
   );
 }

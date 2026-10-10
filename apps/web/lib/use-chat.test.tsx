@@ -109,7 +109,7 @@ describe("useChat", () => {
     expect(result.current.busy).toBe(false);
   });
 
-  it("creates the conversation on the first question and moves the address when the answer is saved", async () => {
+  it("creates the conversation on the first question and reports it saved, without touching the address", async () => {
     mocks.createConversation.mockResolvedValue({ id: "new-1" });
     const stream = controlledStream();
     mocks.streamAnswer.mockImplementation((_id, _q, signal) => stream.iterate(signal));
@@ -121,7 +121,6 @@ describe("useChat", () => {
     });
     await waitFor(() => expect(mocks.streamAnswer).toHaveBeenCalledWith("new-1", "First question", expect.any(AbortSignal)));
     expect(result.current.conversationId).toBe("new-1");
-    expect(window.history.replaceState).not.toHaveBeenCalled(); // not before the answer is saved
 
     await act(async () => {
       stream.push({ type: "start", sources: [] });
@@ -130,7 +129,7 @@ describe("useChat", () => {
       await sending;
     });
     expect(saved).toHaveBeenCalledWith("new-1");
-    expect(window.history.replaceState).toHaveBeenCalledWith(null, "", "/chat/new-1");
+    expect(window.history.replaceState).not.toHaveBeenCalled(); // navigation is the page's decision
   });
 
   it("reports a problem found before the answer starts and hands the question back", async () => {
@@ -219,6 +218,50 @@ describe("useChat", () => {
       void result.current.send("two");
     });
     expect(result.current.error).toBeNull();
+  });
+
+  it("still counts the answer as saved when refreshing the lists afterwards fails", async () => {
+    const stream = controlledStream();
+    mocks.streamAnswer.mockImplementation((_id, _q, signal) => stream.iterate(signal));
+    saved.mockRejectedValue(new Error("network down while refreshing"));
+    const { result } = setup();
+    let sending!: Promise<boolean>;
+    act(() => {
+      sending = result.current.send("q");
+    });
+    await act(async () => {
+      stream.push({ type: "start", sources: [] });
+      stream.push({ type: "done", userMessage: message("user", "q"), assistantMessage: message("assistant", "a") });
+      stream.end();
+      await sending;
+    });
+    expect(await sending).toBe(true); // the server stored it: do not make the person ask again
+    expect(result.current.pending).toBeNull();
+    expect(result.current.error).toBeNull();
+  });
+
+  it("stops while the conversation is still being created, and nothing is streamed", async () => {
+    let seenSignal: AbortSignal | undefined;
+    mocks.createConversation.mockImplementation(
+      (_title: unknown, signal: AbortSignal) =>
+        new Promise((_resolve, reject) => {
+          seenSignal = signal;
+          signal.addEventListener("abort", () => reject(new DOMException("aborted", "AbortError")));
+        }),
+    );
+    const { result } = setup(null);
+    let sending!: Promise<boolean>;
+    act(() => {
+      sending = result.current.send("first question");
+    });
+    await waitFor(() => expect(seenSignal).toBeDefined());
+    await act(async () => {
+      result.current.stop();
+      await sending;
+    });
+    expect(result.current.pending).toMatchObject({ status: "stopped" });
+    expect(mocks.streamAnswer).not.toHaveBeenCalled();
+    expect(result.current.busy).toBe(false);
   });
 
   it("cancels the running answer when the page is left", async () => {

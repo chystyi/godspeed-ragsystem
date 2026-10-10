@@ -52,6 +52,51 @@ describe("readChatEvents", () => {
     expect(await collect(streamOf([encode(text)]))).toEqual(events);
   });
 
+  it("accepts a bare carriage return as the line ending (valid in server-sent events)", async () => {
+    const text = events.map(frame).join("").replaceAll("\n", "\r");
+    expect(await collect(streamOf([encode(text)]))).toEqual(events);
+  });
+
+  it("handles a CRLF pair split between two chunks", async () => {
+    const text = events.map(frame).join("").replaceAll("\n", "\r\n");
+    const bytes = encode(text);
+    const chunks = Array.from(bytes, (byte) => new Uint8Array([byte])); // every \r and \n alone
+    expect(await collect(streamOf(chunks))).toEqual(events);
+  });
+
+  it("closes the connection when the reader stops early", async () => {
+    let cancelled = false;
+    const stream = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(encode(frame(events[0])));
+        controller.enqueue(encode(frame(events[1])));
+      },
+      cancel() {
+        cancelled = true;
+      },
+    });
+    for await (const event of readChatEvents(stream)) {
+      expect(event).toEqual(events[0]);
+      break; // e.g. the chat view stopped listening after the final event
+    }
+    expect(cancelled).toBe(true);
+  });
+
+  it("does not report a cancel after the stream ended normally", async () => {
+    let cancelled = false;
+    const stream = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(encode(frame(events[0])));
+        controller.close();
+      },
+      cancel() {
+        cancelled = true;
+      },
+    });
+    await collect(stream);
+    expect(cancelled).toBe(false);
+  });
+
   it("ignores comments and keep-alive lines", async () => {
     const text = `: keep-alive\n\n${frame(events[0])}: ping\n\n`;
     expect(await collect(streamOf([encode(text)]))).toEqual([events[0]]);

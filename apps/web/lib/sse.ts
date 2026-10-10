@@ -11,29 +11,38 @@ export async function* readChatEvents(
   const reader = body.getReader();
   const decoder = new TextDecoder();
   let buffer = "";
+  let finished = false;
   try {
     for (;;) {
       const { done, value } = await reader.read();
-      if (done) break;
+      if (done) {
+        finished = true;
+        break;
+      }
       buffer += decoder.decode(value, { stream: true });
-      const blocks = buffer.split(/\r?\n\r?\n/);
-      buffer = blocks.pop() ?? "";
+      // A line may end in \n, \r\n or a lone \r. A trailing \r might be half of \r\n, so it waits.
+      const holdBack = buffer.endsWith("\r") ? "\r" : "";
+      const ready = holdBack ? buffer.slice(0, -1) : buffer;
+      const blocks = ready.replace(/\r\n?/g, "\n").split("\n\n");
+      buffer = (blocks.pop() ?? "") + holdBack;
       for (const block of blocks) {
         const event = parseBlock(block);
         if (event) yield event;
       }
     }
-    buffer += decoder.decode();
+    buffer = (buffer + decoder.decode()).replace(/\r\n?/g, "\n");
     const last = buffer.trim() ? parseBlock(buffer) : null;
     if (last) yield last;
   } finally {
+    // Reading stopped early (the caller left, or failed): close the connection instead of leaving it open.
+    if (!finished) await reader.cancel().catch(() => undefined);
     reader.releaseLock();
   }
 }
 
 function parseBlock(block: string): ChatStreamEvent | null {
   const data = block
-    .split(/\r?\n/)
+    .split("\n")
     .filter((line) => line.startsWith("data:"))
     .map((line) => line.slice(5).replace(/^ /, ""))
     .join("\n");

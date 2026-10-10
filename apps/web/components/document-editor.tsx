@@ -44,7 +44,7 @@ export function NewDocumentEditor() {
           content: values.content,
           tags: parseTags(values.tags),
         });
-        await mutate("documents");
+        await mutate("documents").catch(() => undefined); // the document exists; the list catches up later
         setFormKey((key) => key + 1);
         router.replace(`/documents/${created.id}`);
         return created;
@@ -81,8 +81,8 @@ export function ExistingDocumentEditor({ id }: { id: string }) {
   }
 
   const store = async (updated: KbDocument) => {
-    await mutate(updated, { revalidate: false });
-    await refreshAll("documents");
+    // The change is already saved on the server; a failed cache refresh must not look like a failed save.
+    await Promise.allSettled([mutate(updated, { revalidate: false }), refreshAll("documents")]);
     return updated;
   };
 
@@ -103,7 +103,7 @@ export function ExistingDocumentEditor({ id }: { id: string }) {
       onReindex={async () => store(await api.reindexDocument(doc.id))}
       onDelete={async () => {
         await api.deleteDocument(doc.id);
-        await refreshAll("documents");
+        await refreshAll("documents").catch(() => undefined);
         router.replace("/documents");
       }}
     />
@@ -152,15 +152,18 @@ function DocumentForm({ saved: initialSaved, initial, onSave, onReindex, onDelet
   };
 
   async function save() {
+    if (saving) return;
     const found = validateDocumentForm(values);
     setErrors(found);
     if (Object.keys(found).length > 0) return;
     setSaving(true);
     setFailure(null);
+    const sent = values;
     try {
-      const result = await onSave(values);
+      const result = await onSave(sent);
       setSaved(result);
-      setValues(toValues(result));
+      // Only replace the form with the server's copy if nothing was typed during the save.
+      setValues((current) => (current === sent ? toValues(result) : current));
       setJustSaved(true);
     } catch (error) {
       setFailure(describeError(error));
@@ -238,7 +241,10 @@ function DocumentForm({ saved: initialSaved, initial, onSave, onReindex, onDelet
             </Button>
           }
         >
-          Saved, but the document cannot be searched yet. {saved.indexingError ?? ""}
+          {saved.indexedAt
+            ? "Saved, but the latest version cannot be searched yet; the earlier version can still be searched."
+            : "Saved, but the document cannot be searched yet."}{" "}
+          {saved.indexingError ?? ""}
           {dirty && " Save your changes first, then try again."}
         </Alert>
       )}
