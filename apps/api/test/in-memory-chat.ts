@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import type { ChatMessage, ChatSource, Conversation } from '@kb/shared';
+import { LimitReachedError } from '../src/http/limit-error.js';
 import {
   type ChatRepository,
   type ChatRepositoryFactory,
@@ -20,6 +21,7 @@ export class InMemoryChatDatabase {
   messages: StoredMessage[] = [];
   /** Passages the "vector search" finds; the search applies the threshold and limit itself. */
   corpus: RetrievedChunk[] = [];
+  conversationLimit = 200;
   searches: { embedding: number[]; limit: number; minSimilarity: number }[] = [];
   private clock = 0;
 
@@ -53,6 +55,7 @@ class InMemoryChatRepository implements ChatRepository {
   }
 
   async createConversation(title = 'New conversation'): Promise<Conversation> {
+    if (this.own().length >= this.db.conversationLimit) throw new LimitReachedError('conversations', this.db.conversationLimit);
     const now = this.db.tick();
     const conversation = { id: randomUUID(), userId: this.userId, title, createdAt: now, updatedAt: now };
     this.db.conversations.push(conversation);

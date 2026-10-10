@@ -21,7 +21,7 @@ import { CHAT_CONFIG, type ChatConfig } from './chat.config.js';
 import { ChatController } from './chat.controller.js';
 import { CHAT_REPOSITORY_FACTORY } from './chat.repository.js';
 import { ChatService } from './chat.service.js';
-import { RATE_LIMITER, RateLimitGuard, SlidingWindowLimiter } from './rate-limiter.js';
+import { CHAT_LIMITER, ConcurrencyLimiter, SlidingWindowLimiter, STREAM_LIMITER } from '../http/rate-limiter.js';
 
 class FakeChat implements ChatModel {
   reply: string | Error = 'The answer [1].';
@@ -68,24 +68,25 @@ let app: INestApplication;
 let db: InMemoryChatDatabase;
 let chat: FakeChat;
 
-async function build(rateLimit = 20): Promise<INestApplication> {
+async function build(rateLimit = 20, maxStreams = 3): Promise<INestApplication> {
   const config: ChatConfig = {
     topK: 5,
     minSimilarity: 0.25,
     historyMessages: 10,
     rewriteQueries: false,
     rateLimitPerMinute: rateLimit,
+    maxConcurrentStreams: maxStreams,
   };
   const moduleRef = await Test.createTestingModule({
     controllers: [ChatController],
     providers: [
       ChatService,
-      RateLimitGuard,
       { provide: CHAT_REPOSITORY_FACTORY, useValue: db.factory() },
       { provide: CHAT_MODEL, useValue: chat },
       { provide: EMBEDDING_MODEL, useValue: embedder },
       { provide: CHAT_CONFIG, useValue: config },
-      { provide: RATE_LIMITER, useValue: new SlidingWindowLimiter(rateLimit, 60_000) },
+      { provide: CHAT_LIMITER, useValue: new SlidingWindowLimiter(rateLimit, 60_000) },
+      { provide: STREAM_LIMITER, useValue: new ConcurrencyLimiter(maxStreams) },
       { provide: TOKEN_VERIFIER, useValue: verifier },
     ],
   }).compile();
@@ -117,6 +118,18 @@ const newConversation = async (user = 'alice', body: object = {}) =>
 const send = (id: string, user: string, content: unknown) =>
   http().post(`/api/conversations/${id}/messages`).set(as(user)).send({ content });
 
+describe('per-user cap on conversations', () => {
+  it('answers 409 with a clear message when the cap is reached', async () => {
+    db.conversationLimit = 2;
+    await newConversation();
+    await newConversation();
+    const refused = await http().post('/api/conversations').set(as('alice')).send({});
+    expect(refused.status).toBe(409);
+    expect(refused.body).toEqual({ code: 'limit_reached', message: expect.stringMatching(/limit of 2 conversations/) });
+    expect((await http().post('/api/conversations').set(as('bob')).send({})).status).toBe(201);
+  });
+});
+
 describe('authentication', () => {
   it('protects every route', async () => {
     const id = '7d1f0b9e-6c1e-4a54-9c43-0d9a8f6c1111';
@@ -143,7 +156,7 @@ describe('conversations', () => {
     expect(named.body.title).toBe('Taxes');
   });
 
-  it.each([{ title: '' }, { title: 'a'.repeat(201) }, { title: 5 }, { userId: 'bob' }])(
+  it.each([{ title: '' }, { title: 'a'.repeat(201) }, { title: 5 }, { userId: 'bob' }, { title: 'a\u0000b' }])(
     'rejects %j with 422',
     async (body) => {
       expect((await http().post('/api/conversations').set(as('alice')).send(body)).status).toBe(422);
@@ -212,6 +225,8 @@ describe('asking questions', () => {
     ['blank', '   \n '],
     ['too long', 'a'.repeat(4001)],
     ['not a string', 42],
+    ['one with a NUL character', 'hello\u0000world'],
+    ['one with a lone surrogate', 'broken \ud83d emoji'],
     ['missing', undefined],
   ])('rejects a %s message with 422 and saves nothing', async (_name, content) => {
     const { id } = await newConversation();
@@ -261,6 +276,17 @@ describe('rate limit', () => {
     expect(Number(refused.headers['retry-after'])).toBeGreaterThan(0);
     expect((await send(other.id, 'bob', 'still fine')).status).toBe(201);
     expect(db.messages.filter((m) => m.content === 'one too many')).toHaveLength(0);
+  });
+
+  it('does not use up the quota on requests that are rejected as invalid', async () => {
+    await app.close();
+    app = await build(2);
+    const { id } = await newConversation();
+    for (let i = 0; i < 5; i++) expect((await send(id, 'alice', '   ')).status).toBe(422);
+    expect((await send('not-a-uuid', 'alice', 'hi')).status).toBe(404);
+    expect((await send(id, 'alice', 'valid one')).status).toBe(201); // quota untouched
+    expect((await send(id, 'alice', 'valid two')).status).toBe(201);
+    expect((await send(id, 'alice', 'valid three')).status).toBe(429);
   });
 
   it('does not limit reading or creating conversations', async () => {
@@ -406,5 +432,72 @@ describe('streaming answers (server-sent events)', () => {
     const refused = await streamOf(id, 'alice', 'three');
     expect(refused.status).toBe(429);
     expect(JSON.parse(String(refused.body)).code).toBe('too_many_requests');
+  });
+});
+
+describe('answers running at the same time', () => {
+  const streamOf = (id: string, user: string, content = 'q') =>
+    http()
+      .post(`/api/conversations/${id}/messages/stream`)
+      .set(as(user))
+      .send({ content })
+      .buffer(true)
+      .parse((res, callback) => {
+        let data = '';
+        res.on('data', (part: Buffer) => (data += part.toString()));
+        res.on('end', () => callback(null, data));
+      });
+
+  it('refuses a new stream while the user already has the maximum running, and frees the slot afterwards', async () => {
+    await app.close();
+    app = await build(100, 2);
+    chat.parts = Array.from({ length: 6 }, (_, i) => `part ${i} `);
+    chat.partDelayMs = 80;
+    const a = await newConversation();
+    // supertest sends a request only when it is awaited or `then` is called: start both now
+    const first = Promise.resolve(streamOf(a.id, 'alice'));
+    const second = Promise.resolve(streamOf(a.id, 'alice'));
+    await new Promise((r) => setTimeout(r, 150)); // both are running now
+    const third = await streamOf(a.id, 'alice');
+    expect(third.status).toBe(429);
+    expect(JSON.parse(String(third.body)).code).toBe('too_many_requests');
+    expect(Number(third.headers['retry-after'])).toBeGreaterThan(0);
+    expect((await first).status).toBe(200);
+    expect((await second).status).toBe(200);
+    chat.partDelayMs = 0;
+    expect((await streamOf(a.id, 'alice')).status).toBe(200); // slots are free again
+  });
+
+  it("does not count another user's streams", async () => {
+    await app.close();
+    app = await build(100, 1);
+    chat.parts = ['a ', 'b ', 'c ', 'd '];
+    chat.partDelayMs = 80;
+    const alice = await newConversation('alice');
+    const bob = await newConversation('bob');
+    const running = Promise.resolve(streamOf(alice.id, 'alice'));
+    await new Promise((r) => setTimeout(r, 100));
+    expect((await streamOf(bob.id, 'bob')).status).toBe(200);
+    await running;
+  });
+
+  it('frees the slot when the answer fails in the middle', async () => {
+    await app.close();
+    app = await build(100, 1);
+    const a = await newConversation();
+    chat.parts = ['half ', new AiProviderError('unavailable', 'down', 503)];
+    await streamOf(a.id, 'alice');
+    chat.parts = ['fine'];
+    expect((await streamOf(a.id, 'alice')).status).toBe(200);
+  });
+
+  it('frees the slot when the provider rejects the request before the answer starts', async () => {
+    await app.close();
+    app = await build(100, 1);
+    const a = await newConversation();
+    chat.parts = [new AiProviderError('rate_limited', 'busy', 429)];
+    expect((await streamOf(a.id, 'alice')).status).toBe(429);
+    chat.parts = ['fine'];
+    expect((await streamOf(a.id, 'alice')).status).toBe(200);
   });
 });

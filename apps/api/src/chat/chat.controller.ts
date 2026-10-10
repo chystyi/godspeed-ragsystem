@@ -4,12 +4,13 @@ import type {
   ConversationWithMessages,
   SendMessageResult,
 } from '@kb/shared';
-import { Body, Controller, Delete, Get, HttpCode, Param, Post, Res, UseGuards } from '@nestjs/common';
+import { Body, Controller, Delete, Get, HttpCode, Inject, Param, Post, Res, UseGuards } from '@nestjs/common';
 import type { Response } from 'express';
 import { ApiExceptionFilter } from '../http/api-exception.filter.js';
 import { AuthGuard } from '../auth/auth.guard.js';
 import type { AuthUser } from '../auth/auth.types.js';
 import { CurrentUser } from '../auth/current-user.decorator.js';
+import { CHAT_LIMITER, type ConcurrencyLimiter, type SlidingWindowLimiter, STREAM_LIMITER } from '../http/rate-limiter.js';
 import { UuidPipe, ZodPipe } from '../http/validation.js';
 import {
   type CreateConversationDto,
@@ -19,7 +20,6 @@ import {
 } from './chat.schemas.js';
 import { ConversationNotFoundError } from './chat.repository.js';
 import { ChatService } from './chat.service.js';
-import { RateLimitGuard } from './rate-limiter.js';
 
 const conversationId = new UuidPipe((id) => new ConversationNotFoundError(id));
 
@@ -28,7 +28,11 @@ const conversationId = new UuidPipe((id) => new ConversationNotFoundError(id));
 export class ChatController {
   private readonly errors = new ApiExceptionFilter();
 
-  constructor(private readonly chat: ChatService) {}
+  constructor(
+    private readonly chat: ChatService,
+    @Inject(CHAT_LIMITER) private readonly questions: SlidingWindowLimiter,
+    @Inject(STREAM_LIMITER) private readonly streams: ConcurrencyLimiter,
+  ) {}
 
   @Post()
   @HttpCode(201)
@@ -60,12 +64,13 @@ export class ChatController {
 
   @Post(':id/messages')
   @HttpCode(201)
-  @UseGuards(RateLimitGuard)
   send(
     @CurrentUser() user: AuthUser,
     @Param('id', conversationId) id: string,
     @Body(new ZodPipe(sendMessageSchema)) body: SendMessageDto,
   ): Promise<SendMessageResult> {
+    // After validation, so requests that are rejected as invalid do not use up the quota.
+    this.questions.enforce(user.id);
     return this.chat.ask(user, id, body.content);
   }
 
@@ -75,20 +80,29 @@ export class ChatController {
    * are ordinary JSON errors; a failure after that arrives as an `error` event.
    */
   @Post(':id/messages/stream')
-  @UseGuards(RateLimitGuard)
   async stream(
     @CurrentUser() user: AuthUser,
     @Param('id', conversationId) id: string,
     @Body(new ZodPipe(sendMessageSchema)) body: SendMessageDto,
     @Res() response: Response,
   ): Promise<void> {
+    this.questions.enforce(user.id);
+    const release = this.streams.require(user.id);
+    try {
+      await this.streamAnswer(user, id, body.content, response);
+    } finally {
+      release();
+    }
+  }
+
+  private async streamAnswer(user: AuthUser, id: string, content: string, response: Response): Promise<void> {
     const cancelled = new AbortController();
     // If the connection ends before we finished, stop work (and spending) on this answer.
     response.on('close', () => {
       if (!response.writableFinished) cancelled.abort();
     });
 
-    const events = this.chat.askStream(user, id, body.content, cancelled.signal);
+    const events = this.chat.askStream(user, id, content, cancelled.signal);
     const first = await events.next(); // throws: handled like any other request
 
     response.status(200).set({

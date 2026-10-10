@@ -15,6 +15,7 @@ import {
   type EmbeddingModel,
 } from '../ai/ai.types.js';
 import { AiProviderError } from '../ai/errors.js';
+import { truncate } from '../text.js';
 import type { AuthUser } from '../auth/auth.types.js';
 import { CHAT_CONFIG, type ChatConfig } from './chat.config.js';
 import {
@@ -88,7 +89,7 @@ export class ChatService {
    * fails before the answer exists, nothing is saved and the user can simply ask again.
    */
   async ask(user: AuthUser, conversationId: string, question: string): Promise<SendMessageResult> {
-    const context = await this.prepare(user, conversationId, question);
+    const context = (await this.prepare(user, conversationId, question)) as AskContext; // no signal: never null
     let answer = NO_ANSWER_TEXT;
     if (context.passages.length > 0) {
       answer = (await this.chat.complete(context.messages, { temperature: ANSWER_TEMPERATURE })).content;
@@ -108,7 +109,14 @@ export class ChatService {
     question: string,
     signal?: AbortSignal,
   ): AsyncGenerator<ChatStreamEvent> {
-    const context = await this.prepare(user, conversationId, question);
+    let context: AskContext | null;
+    try {
+      context = await this.prepare(user, conversationId, question, signal);
+    } catch (error) {
+      if (signal?.aborted) return; // the client left; a failure caused by that is not worth reporting
+      throw error;
+    }
+    if (!context) return;
     const sources = toSources(context.passages, '');
     let answer = '';
 
@@ -124,7 +132,10 @@ export class ChatService {
         // Wait for the first part before announcing anything: a provider that rejects the
         // request (bad key, rate limit) then fails like a normal request.
         const first = await parts.next();
-        if (first.done) throw new AiProviderError('invalid_response', 'chat stream returned no content');
+        if (first.done) {
+          if (signal?.aborted) return; // cancelled before the first word: nothing to report
+          throw new AiProviderError('invalid_response', 'chat stream returned no content');
+        }
         yield { type: 'start', sources };
         answer = first.value;
         yield { type: 'delta', text: first.value };
@@ -143,14 +154,22 @@ export class ChatService {
   }
 
   /** Everything both kinds of answer need before the model is called. */
-  private async prepare(user: AuthUser, conversationId: string, question: string): Promise<AskContext> {
+  private async prepare(
+    user: AuthUser,
+    conversationId: string,
+    question: string,
+    signal?: AbortSignal,
+  ): Promise<AskContext | null> {
     const repository = this.repositories.forUser(user.token);
     const conversation = await this.requireConversation(repository, conversationId);
     const history = await repository.recentMessages(conversationId, this.config.historyMessages);
     const turns: HistoryTurn[] = history.map(({ role, content }) => ({ role, content }));
 
-    const searchQuery = await this.standaloneQuery(turns, question);
-    const { vectors } = await this.embedder.embed([searchQuery]);
+    if (signal?.aborted) return null;
+    const searchQuery = await this.standaloneQuery(turns, question, signal);
+    if (signal?.aborted) return null;
+    const { vectors } = await this.embedder.embed([searchQuery], { signal });
+    if (signal?.aborted) return null;
     const passages = await repository.searchChunks(
       vectors[0],
       this.config.topK,
@@ -192,14 +211,15 @@ export class ChatService {
   }
 
   /** The text to search with: a follow-up is first turned into a self-contained question. */
-  private async standaloneQuery(history: HistoryTurn[], question: string): Promise<string> {
+  private async standaloneQuery(history: HistoryTurn[], question: string, signal?: AbortSignal): Promise<string> {
     if (!this.config.rewriteQueries || history.length === 0) return question;
     try {
       const rewritten = (await this.chat.complete(buildRewriteMessages(history, question), {
         temperature: 0,
         maxTokens: 100,
+        signal,
       })).content.trim();
-      return rewritten ? rewritten.slice(0, MAX_REWRITTEN_QUERY_CHARS) : question;
+      return rewritten ? truncate(rewritten, MAX_REWRITTEN_QUERY_CHARS) : question;
     } catch (error) {
       // The rewrite only improves search; the original question still works.
       this.logger.warn(`query rewrite failed, searching with the original question: ${String(error)}`);
@@ -217,7 +237,7 @@ function toSources(passages: RetrievedChunk[], answer: string): ChatSource[] {
     documentTitle: passage.documentTitle,
     chunkIndex: passage.chunkIndex,
     similarity: passage.similarity,
-    snippet: passage.content.slice(0, SNIPPET_CHARS),
+    snippet: truncate(passage.content, SNIPPET_CHARS),
     cited: cited.has(i + 1),
   }));
 }

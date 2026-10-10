@@ -4,6 +4,8 @@ import type { Response } from 'express';
 import { AiProviderError } from '../ai/errors.js';
 import { ConversationNotFoundError } from '../chat/chat.repository.js';
 import { DocumentNotFoundError } from '../documents/errors.js';
+import { LimitReachedError } from './limit-error.js';
+import { RateLimitedError } from './rate-limiter.js';
 import { ValidationFailedError } from './validation.js';
 
 const CODE_BY_STATUS: Record<number, string> = {
@@ -18,6 +20,7 @@ const CODE_BY_STATUS: Record<number, string> = {
 export interface Mapped {
   status: number;
   body: ApiError;
+  headers?: Record<string, string>;
 }
 
 /** One error format for everything, including errors raised by the framework. */
@@ -27,7 +30,8 @@ export class ApiExceptionFilter implements ExceptionFilter {
 
   catch(exception: unknown, host: ArgumentsHost): void {
     const response = host.switchToHttp().getResponse<Response>();
-    const { status, body } = this.map(exception);
+    const { status, body, headers } = this.map(exception);
+    if (headers) response.set(headers);
     response.status(status).json(body);
   }
 
@@ -38,6 +42,16 @@ export class ApiExceptionFilter implements ExceptionFilter {
         status: 422,
         body: { code: 'validation_error', message: exception.message, details: exception.issues },
       };
+    }
+    if (exception instanceof RateLimitedError) {
+      return {
+        status: 429,
+        body: { code: 'too_many_requests', message: exception.message },
+        headers: { 'Retry-After': String(exception.retryAfterSeconds) },
+      };
+    }
+    if (exception instanceof LimitReachedError) {
+      return { status: 409, body: { code: 'limit_reached', message: exception.message } };
     }
     if (exception instanceof DocumentNotFoundError) {
       return { status: 404, body: { code: 'document_not_found', message: 'document not found' } };

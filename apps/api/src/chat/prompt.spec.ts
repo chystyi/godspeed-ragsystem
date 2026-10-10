@@ -93,6 +93,15 @@ describe('buildAnswerMessages', () => {
     expect(messages.map((m) => m.role)).toEqual(['system', 'user']);
   });
 
+  it('keeps the history well formed when a turn is cut inside an emoji', () => {
+    const messages = buildAnswerMessages({
+      question: 'q',
+      history: [{ role: 'user', content: `${'a'.repeat(1999)}😀tail` }],
+      sources: [source(1)],
+    });
+    for (const message of messages) expect(message.content.isWellFormed()).toBe(true);
+  });
+
   it('cuts very long single turns', () => {
     const messages = buildAnswerMessages({
       question: 'q',
@@ -143,6 +152,11 @@ describe('titleFromQuestion', () => {
     expect(title.length).toBeLessThanOrEqual(61);
     expect(title.endsWith('…')).toBe(true);
     expect(title).not.toMatch(/wor…$/);
+  });
+
+  it('never ends a title in half of an emoji', () => {
+    const title = titleFromQuestion(`${'a'.repeat(59)}😀 and then more words`);
+    expect(title.isWellFormed()).toBe(true);
   });
 
   it('collapses whitespace and newlines', () => {

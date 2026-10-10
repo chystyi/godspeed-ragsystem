@@ -1,5 +1,5 @@
 import { Logger } from '@nestjs/common';
-import { beforeAll, beforeEach, describe, expect, it } from 'vitest';
+import { beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { InMemoryDatabase } from '../../test/in-memory-documents.js';
 import type { EmbeddingModel } from '../ai/ai.types.js';
 import { AiProviderError } from '../ai/errors.js';
@@ -35,6 +35,76 @@ beforeEach(() => {
 async function newDoc(content = 'First paragraph.\n\nSecond paragraph.', title = 'Guide') {
   return repo().create({ title, content, tags: [] });
 }
+
+/** An embedder whose answers are held back until the test releases them, in any order. */
+class GatedEmbedder extends FakeEmbedder {
+  private gates: (() => void)[] = [];
+  async embed(texts: string[]) {
+    await new Promise<void>((resolve) => this.gates.push(resolve));
+    return super.embed(texts);
+  }
+  /** Lets the n-th pending embedding finish. */
+  release(index: number) {
+    this.gates[index]();
+  }
+  get pending() {
+    return this.gates.length;
+  }
+}
+
+describe('IndexingService with overlapping edits', () => {
+  async function twoOverlappingEdits(order: [number, number]) {
+    const gated = new GatedEmbedder();
+    const service = new IndexingService(gated);
+    const doc = await newDoc('original text', 'Guide');
+    const first = (await repo().update(doc.id, { content: 'OLD edit' }))!;
+    const second = (await repo().update(doc.id, { content: 'NEW edit' }))!;
+    const runs = [service.index(repo(), first), service.index(repo(), second)];
+    await vi.waitFor(() => expect(gated.pending).toBe(2));
+    const outcomes: string[] = [];
+    for (const which of order) {
+      gated.release(which);
+      outcomes[which] = await runs[which];
+    }
+    return { outcomes, doc };
+  }
+
+  it.each([
+    ['the older run finishes last', [1, 0]],
+    ['the newer run finishes last', [0, 1]],
+  ] as const)('keeps the newest text searchable when %s', async (_name, order) => {
+    const { doc } = await twoOverlappingEdits([...order]);
+    expect(db.chunks.map((c) => c.content)).toEqual(['NEW edit']);
+    const stored = await repo().findById(doc.id);
+    expect(stored).toMatchObject({ indexingStatus: 'indexed', content: 'NEW edit' });
+  });
+
+  it('drops the result about the older text instead of reporting a failure', async () => {
+    const { outcomes } = await twoOverlappingEdits([1, 0]);
+    expect(outcomes).toEqual(['skipped', 'indexed']); // run 0 (old) is dropped, run 1 (new) is stored
+  });
+
+  it('does not let a failure about older text mark the newer text as failed', async () => {
+    const gated = new GatedEmbedder();
+    const service = new IndexingService(gated);
+    const doc = await newDoc('original', 'Guide');
+    const oldVersion = (await repo().update(doc.id, { content: 'OLD edit' }))!;
+    const oldRun = service.index(repo(), oldVersion);
+    await vi.waitFor(() => expect(gated.pending).toBe(1));
+    const newVersion = (await repo().update(doc.id, { content: 'NEW edit' }))!;
+    gated.failWith = new AiProviderError('unavailable', 'down', 503); // the old run will fail...
+    gated.release(0);
+    await oldRun;
+    // ...but the document now holds newer text, so its state must be untouched
+    expect((await repo().findById(doc.id))?.indexingStatus).not.toBe('failed');
+    // and the new text can still be indexed normally
+    gated.failWith = undefined;
+    const newRun = service.index(repo(), newVersion);
+    await vi.waitFor(() => expect(gated.pending).toBe(2));
+    gated.release(1);
+    await expect(newRun).resolves.toBe('indexed');
+  });
+});
 
 describe('IndexingService', () => {
   it('chunks, embeds with the title as context and stores the vectors', async () => {
@@ -94,7 +164,7 @@ describe('IndexingService', () => {
     await expect(indexing.index(repo(), doc)).resolves.toBe('failed');
     const stored = await repo().findById(doc.id);
     expect(stored).toMatchObject({ indexingStatus: 'failed' });
-    expect(stored?.indexingError).toContain('HTTP 503');
+    expect(stored?.indexingError).toBe('the AI provider is unavailable');
     expect(db.chunks).toHaveLength(0);
   });
 
@@ -115,6 +185,22 @@ describe('IndexingService', () => {
     await indexing.index(repo(), edited);
     expect(db.chunks.map((c) => c.content)).toEqual([doc.content]); // untouched
     expect((await repo().findById(doc.id))?.indexingStatus).toBe('failed');
+  });
+
+  it.each([
+    ['unavailable', 'the AI provider is unavailable'],
+    ['rate_limited', 'the AI provider is busy'],
+    ['authentication', 'the AI provider could not be used'],
+    ['bad_request', 'the AI provider could not process this text'],
+    ['invalid_response', 'the AI provider returned an unusable answer'],
+    ['dimension_mismatch', 'the embedding model returns vectors of the wrong size'],
+  ] as const)('stores a fixed explanation for a "%s" failure, never the provider\'s own text', async (kind, expected) => {
+    const doc = await newDoc();
+    embedder.failWith = new AiProviderError(kind, 'provider said: key sk-secret-123 and your text "private words"', 500);
+    await indexing.index(repo(), doc);
+    const stored = await repo().findById(doc.id);
+    expect(stored?.indexingError).toBe(expected);
+    expect(stored?.indexingError).not.toMatch(/sk-secret|private words/);
   });
 
   it('never reveals secrets or internals in the stored error', async () => {

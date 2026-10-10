@@ -5,6 +5,7 @@ import {
   Delete,
   Get,
   HttpCode,
+  Inject,
   Param,
   Patch,
   Post,
@@ -13,6 +14,7 @@ import {
 import { AuthGuard } from '../auth/auth.guard.js';
 import type { AuthUser } from '../auth/auth.types.js';
 import { CurrentUser } from '../auth/current-user.decorator.js';
+import { DOCUMENT_WRITE_LIMITER, type SlidingWindowLimiter } from '../http/rate-limiter.js';
 import { UuidPipe, ZodPipe } from '../http/validation.js';
 import { DocumentNotFoundError } from './errors.js';
 import {
@@ -28,7 +30,10 @@ const documentId = new UuidPipe((id) => new DocumentNotFoundError(id));
 @Controller('api/documents')
 @UseGuards(AuthGuard)
 export class DocumentsController {
-  constructor(private readonly documents: DocumentsService) {}
+  constructor(
+    private readonly documents: DocumentsService,
+    @Inject(DOCUMENT_WRITE_LIMITER) private readonly writes: SlidingWindowLimiter,
+  ) {}
 
   @Post()
   @HttpCode(201)
@@ -36,6 +41,7 @@ export class DocumentsController {
     @CurrentUser() user: AuthUser,
     @Body(new ZodPipe(createDocumentSchema)) body: CreateDocumentDto,
   ): Promise<KbDocument> {
+    this.writes.enforce(user.id); // after validation: invalid requests are free
     return this.documents.create(user, body);
   }
 
@@ -55,6 +61,7 @@ export class DocumentsController {
     @Param('id', documentId) id: string,
     @Body(new ZodPipe(updateDocumentSchema)) body: UpdateDocumentDto,
   ): Promise<KbDocument> {
+    this.writes.enforce(user.id);
     return this.documents.update(user, id, body);
   }
 
@@ -67,6 +74,7 @@ export class DocumentsController {
   @Post(':id/reindex')
   @HttpCode(200)
   reindex(@CurrentUser() user: AuthUser, @Param('id', documentId) id: string): Promise<KbDocument> {
+    this.writes.enforce(user.id);
     return this.documents.reindex(user, id);
   }
 }

@@ -4,6 +4,7 @@ import type {
   ChatModel,
   ChatOptions,
   ChatTurn,
+  EmbedOptions,
   EmbeddingModel,
   EmbeddingResult,
 } from './ai.types.js';
@@ -33,6 +34,30 @@ export interface EmbeddingConfig extends ProviderConnection {
 /** Texts per embeddings request; keeps requests small and within provider limits. */
 export const EMBEDDING_BATCH_SIZE = 64;
 
+/**
+ * The vectors in input order, taken from the response only if its shape can be trusted: exactly
+ * one item per text, each with an `index` (0..n-1, no repeats) and a list of numbers. Anything
+ * else would risk attaching a vector to the wrong text, so it is an error.
+ */
+function orderedVectors(data: unknown, expected: number): number[][] {
+  const invalid = (reason: string) =>
+    new AiProviderError('invalid_response', `embeddings request returned an unusable response: ${reason}`);
+  if (!Array.isArray(data) || data.length !== expected) {
+    throw invalid(`${Array.isArray(data) ? data.length : 'no'} vectors for ${expected} texts`);
+  }
+  const vectors: (number[] | undefined)[] = new Array(expected).fill(undefined);
+  for (const item of data as { index?: unknown; embedding?: unknown }[]) {
+    const { index, embedding } = item ?? {};
+    if (!Number.isInteger(index) || (index as number) < 0 || (index as number) >= expected) throw invalid('bad index');
+    if (vectors[index as number] !== undefined) throw invalid('repeated index');
+    if (!Array.isArray(embedding) || !embedding.every((n) => typeof n === 'number' && Number.isFinite(n))) {
+      throw invalid('a vector is not a list of numbers');
+    }
+    vectors[index as number] = embedding as number[];
+  }
+  return vectors as number[][];
+}
+
 function client(config: ProviderConnection): OpenAI {
   return new OpenAI({
     baseURL: config.baseURL,
@@ -56,6 +81,14 @@ export function toAiProviderError(error: unknown, operation: string): AiProvider
     return new AiProviderError('unavailable', detail, status, { cause: error });
   }
   const message = error instanceof Error ? error.message : String(error);
+  // The SDK reads the body itself; data it cannot decode surfaces as a TypeError or similar.
+  // A connection dropped while the body is read is also a TypeError ("terminated"): that is not bad data.
+  const networkProblem = /terminated|fetch failed|socket|ECONN|ETIMEDOUT|network/i.test(message);
+  if (!networkProblem && (error instanceof TypeError || error instanceof SyntaxError || error instanceof RangeError)) {
+    return new AiProviderError('invalid_response', `${operation} returned data that could not be read`, undefined, {
+      cause: error,
+    });
+  }
   return new AiProviderError('unavailable', `${operation} failed: ${message}`, undefined, {
     cause: error,
   });
@@ -88,7 +121,7 @@ export function createChatModel(config: ChatConfig): ChatModel {
         for await (const chunk of response) {
           const text = chunk.choices[0]?.delta?.content;
           if (text) {
-            produced = true;
+            if (text.trim() !== '') produced = true;
             yield text;
           }
         }
@@ -112,7 +145,7 @@ export function createChatModel(config: ChatConfig): ChatModel {
         throw toAiProviderError(error, 'chat completion');
       }
       const content = response.choices[0]?.message?.content;
-      if (!content) {
+      if (!content || content.trim() === '') {
         throw new AiProviderError('invalid_response', 'chat completion returned no content');
       }
       const usage = response.usage;
@@ -134,25 +167,21 @@ export function createChatModel(config: ChatConfig): ChatModel {
 export function createEmbeddingModel(config: EmbeddingConfig): EmbeddingModel {
   const sdk = client(config);
 
-  async function embedBatch(batch: string[]): Promise<{ vectors: number[][]; tokens: number }> {
+  async function embedBatch(batch: string[], signal?: AbortSignal): Promise<{ vectors: number[][]; tokens: number }> {
     let response: OpenAI.CreateEmbeddingResponse;
     try {
-      response = await sdk.embeddings.create({
-        model: config.model,
-        input: batch,
-        ...(config.sendDimensions && { dimensions: config.dimensions }),
-      });
+      response = await sdk.embeddings.create(
+        {
+          model: config.model,
+          input: batch,
+          ...(config.sendDimensions && { dimensions: config.dimensions }),
+        },
+        { signal },
+      );
     } catch (error) {
       throw toAiProviderError(error, 'embeddings request');
     }
-    if (response.data.length !== batch.length) {
-      throw new AiProviderError(
-        'invalid_response',
-        `embeddings request returned ${response.data.length} vectors for ${batch.length} texts`,
-      );
-    }
-    // Providers may return items out of order; `index` is the contract.
-    const vectors = [...response.data].sort((a, b) => a.index - b.index).map((d) => d.embedding);
+    const vectors = orderedVectors(response.data, batch.length);
     for (const vector of vectors) {
       if (vector.length !== config.dimensions) {
         throw new AiProviderError(
@@ -169,14 +198,14 @@ export function createEmbeddingModel(config: EmbeddingConfig): EmbeddingModel {
   return {
     model: config.model,
     dimensions: config.dimensions,
-    async embed(texts: string[]): Promise<EmbeddingResult> {
+    async embed(texts: string[], options: EmbedOptions = {}): Promise<EmbeddingResult> {
       if (texts.some((text) => text.trim() === '')) {
         throw new AiProviderError('bad_request', 'cannot embed an empty text');
       }
       const vectors: number[][] = [];
       let totalTokens = 0;
       for (let start = 0; start < texts.length; start += EMBEDDING_BATCH_SIZE) {
-        const result = await embedBatch(texts.slice(start, start + EMBEDDING_BATCH_SIZE));
+        const result = await embedBatch(texts.slice(start, start + EMBEDDING_BATCH_SIZE), options.signal);
         vectors.push(...result.vectors);
         totalTokens += result.tokens;
       }

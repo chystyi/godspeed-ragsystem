@@ -24,15 +24,31 @@ export const DEFAULT_CHUNK_OPTIONS: ChunkOptions = { maxChars: 1000, overlapChar
 /** A splitter must be lossless: joining its pieces gives back the input. */
 type Splitter = (text: string) => string[];
 
-/** Strongest boundary first, weakest last. */
+/** Strongest boundary first, weakest last; `hardSplit` takes over when none is left. */
 const SPLITTERS: Splitter[] = [
   (text) => text.split(/(?=^#{1,6} )/m), // before a markdown heading
   (text) => text.split(/(?<=\n\n)/), // paragraphs
   (text) => text.split(/(?<=\n)/), // lines
   (text) => text.match(/[^.!?。！？]*[.!?。！？]+\s*|[^.!?。！？]+$/g) ?? [text], // sentences
   (text) => text.split(/(?<=\s)/), // words
-  (text) => Array.from(text), // code points: last resort, never splits a surrogate pair
 ];
+
+/**
+ * Last resort for a piece without any boundary (one huge token): cut it at the size limit,
+ * but never between the two halves of a surrogate pair. Needs `budget >= 2`, so a pair always fits.
+ */
+function hardSplit(text: string, budget: number): string[] {
+  const pieces: string[] = [];
+  let start = 0;
+  while (start < text.length) {
+    let end = Math.min(start + budget, text.length);
+    const last = text.charCodeAt(end - 1);
+    if (end < text.length && last >= 0xd800 && last <= 0xdbff) end -= 1;
+    pieces.push(text.slice(start, end));
+    start = end;
+  }
+  return pieces;
+}
 
 /** Greedily glue neighbouring pieces together while they still fit. */
 function merge(pieces: string[], budget: number): string[] {
@@ -52,6 +68,7 @@ function merge(pieces: string[], budget: number): string[] {
 
 function split(text: string, level: number, budget: number): string[] {
   if (text.length <= budget) return [text];
+  if (level >= SPLITTERS.length) return hardSplit(text, budget);
   const units: string[] = [];
   for (const piece of SPLITTERS[level](text)) {
     if (piece.length <= budget) units.push(piece);
@@ -75,7 +92,7 @@ function overlapPrefix(previous: string, overlapChars: number): string {
 
 /**
  * Split text into overlapping chunks along its natural structure: markdown headings,
- * then paragraphs, lines, sentences, words and finally characters.
+ * then paragraphs, lines, sentences, words and finally a hard cut.
  */
 export function chunkText(
   text: string,
@@ -83,7 +100,8 @@ export function chunkText(
 ): TextChunk[] {
   // One character is reserved for the newline between overlap and chunk body.
   const budget = maxChars - overlapChars - (overlapChars > 0 ? 1 : 0);
-  if (!Number.isInteger(maxChars) || !Number.isInteger(overlapChars) || overlapChars < 0 || budget < 1) {
+  // A body needs room for at least one surrogate pair (2 units).
+  if (!Number.isInteger(maxChars) || !Number.isInteger(overlapChars) || overlapChars < 0 || budget < 2) {
     throw new RangeError(
       `invalid chunk options: maxChars=${maxChars}, overlapChars=${overlapChars} ` +
         '(overlap must leave room for text)',

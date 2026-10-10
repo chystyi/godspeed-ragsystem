@@ -151,8 +151,57 @@ describe('chat model', () => {
   });
 });
 
+describe('unusable answers from a provider', () => {
+  it.each([['spaces', '   '], ['a newline', '\n'], ['mixed whitespace', ' \n\t ']])(
+    'rejects a chat answer that is only %s',
+    async (_name, content) => {
+      server.setHandler(() => chatReply(content));
+      const error = await createChatModel(chatConfig())
+        .complete([{ role: 'user', content: 'x' }])
+        .catch((e: unknown) => e);
+      expect((error as AiProviderError).kind).toBe('invalid_response');
+    },
+  );
+
+  it('rejects a streamed answer that is only whitespace', async () => {
+    server.setHandler(() => streamReply(['  ', '\n']));
+    const error = await (async () => {
+      for await (const _ of createChatModel(chatConfig()).stream([{ role: 'user', content: 'x' }])) void _;
+    })().catch((e: unknown) => e);
+    expect((error as AiProviderError).kind).toBe('invalid_response');
+  });
+
+  it('still accepts an answer that merely starts or ends with whitespace', async () => {
+    server.setHandler(() => chatReply('\nHello \n'));
+    const answer = await createChatModel(chatConfig()).complete([{ role: 'user', content: 'x' }]);
+    expect(answer.content.trim()).toBe('Hello');
+  });
+});
+
 describe('embedding model', () => {
   const vec = (i: number) => [i, i + 0.5, i + 1];
+
+  const raw = (data: unknown) => ({
+    status: 200,
+    body: { object: 'list', model: 'fake', data, usage: { prompt_tokens: 1, total_tokens: 1 } },
+  });
+
+  it.each([
+    ['an item without an index', [{ embedding: [1, 2, 3] }, { embedding: [1, 2, 3] }]],
+    ['duplicate indexes', [{ index: 0, embedding: [1, 2, 3] }, { index: 0, embedding: [1, 2, 3] }]],
+    ['indexes that do not start at zero', [{ index: 1, embedding: [1, 2, 3] }, { index: 2, embedding: [1, 2, 3] }]],
+    ['a missing vector', [{ index: 0, embedding: null }, { index: 1, embedding: [1, 2, 3] }]],
+    ['a vector that is not a list', [{ index: 0, embedding: 'abc' }, { index: 1, embedding: [1, 2, 3] }]],
+    ['a vector with non-numbers', [{ index: 0, embedding: [1, 'x', 3] }, { index: 1, embedding: [1, 2, 3] }]],
+    ['a vector with a missing value', [{ index: 0, embedding: [1, null, 3] }, { index: 1, embedding: [1, 2, 3] }]],
+  ])('rejects %s as an invalid response, never as a crash', async (_name, data) => {
+    server.setHandler(() => raw(data));
+    const error = await createEmbeddingModel(embeddingConfig())
+      .embed(['a', 'b'])
+      .catch((e: unknown) => e);
+    expect(error).toBeInstanceOf(AiProviderError);
+    expect((error as AiProviderError).kind).toBe('invalid_response');
+  });
 
   it('requests the configured dimensions and returns vectors with usage', async () => {
     server.setHandler((req) =>

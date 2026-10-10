@@ -8,7 +8,9 @@ import type {
   NewDocument,
   ReplaceChunksArgs,
 } from '../src/documents/documents.repository.js';
-import { DocumentNotFoundError } from '../src/documents/errors.js';
+import { documentDigest } from '../src/documents/digest.js';
+import { DocumentNotFoundError, StaleIndexError } from '../src/documents/errors.js';
+import { LimitReachedError } from '../src/http/limit-error.js';
 
 interface StoredChunk {
   documentId: string;
@@ -48,6 +50,7 @@ class InMemoryRepository implements DocumentsRepository {
   }
 
   async create(input: NewDocument): Promise<DocumentRecord> {
+    if (this.own().length >= this.db.documentLimit) throw new LimitReachedError('documents', this.db.documentLimit);
     const now = this.tick();
     const record: StoredDocument = {
       id: randomUUID(),
@@ -111,6 +114,8 @@ class InMemoryRepository implements DocumentsRepository {
     }
     const doc = this.own().find((d) => d.id === id);
     if (!doc) throw new DocumentNotFoundError(id);
+    // Like the database function: results about an older version of the text are refused.
+    if (documentDigest(doc.title, doc.content) !== args.contentDigest) throw new StaleIndexError(id);
     this.db.chunks = this.db.chunks.filter((c) => c.documentId !== id);
     for (const chunk of args.chunks) {
       this.db.chunks.push({
@@ -130,9 +135,13 @@ class InMemoryRepository implements DocumentsRepository {
     });
   }
 
-  async markIndexingFailed(id: string, message: string): Promise<void> {
+  async markIndexingFailed(id: string, message: string, contentDigest: string): Promise<void> {
+    requireUuid(id);
     const doc = this.own().find((d) => d.id === id);
-    if (doc) Object.assign(doc, { indexingStatus: 'failed', indexingError: message });
+    if (!doc) throw new DocumentNotFoundError(id);
+    // Like the database function: a failure about an older version says nothing about this one.
+    if (documentDigest(doc.title, doc.content) !== contentDigest) return;
+    Object.assign(doc, { indexingStatus: 'failed', indexingError: message });
   }
 }
 
@@ -140,6 +149,7 @@ export class InMemoryDatabase {
   documents: StoredDocument[] = [];
   chunks: StoredChunk[] = [];
   clock = 0;
+  documentLimit = 200;
   /** Make the next replaceChunks call fail, to test recovery. */
   failNextChunkWrite: Error | undefined;
 

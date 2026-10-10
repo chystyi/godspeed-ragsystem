@@ -47,12 +47,17 @@ export interface EmbeddingResult {
   usage: { totalTokens: number };
 }
 
+export interface EmbedOptions {
+  /** Cancels the request (e.g. when the user closed the page). */
+  signal?: AbortSignal;
+}
+
 export interface EmbeddingModel {
   /** Model name as sent to the provider; stored with every vector. */
   readonly model: string;
   /** Size of every returned vector; must match the vector column in the database. */
   readonly dimensions: number;
-  embed(texts: string[]): Promise<EmbeddingResult>;
+  embed(texts: string[], options?: EmbedOptions): Promise<EmbeddingResult>;
 }
 
 /** Injection tokens (NestJS). */

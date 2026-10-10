@@ -2,6 +2,7 @@ import { createClient, type SupabaseClient } from '@supabase/supabase-js';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { LiveUsers } from '../../test/live-users.js';
 import { loadRootEnv } from '../config/load-env.js';
+import { documentDigest } from '../documents/digest.js';
 
 // Opt-in: runs against the real Supabase project from .env. It creates two throw-away users
 // and deletes them afterwards (their rows disappear through ON DELETE CASCADE).
@@ -51,6 +52,24 @@ describe.skipIf(!live)('database isolation and retrieval (live)', () => {
       tokenCount: 2,
       embedding: axis(i),
     }));
+
+  /** Index through the database function, with the fingerprint of the document as it is now. */
+  async function indexAs(
+    client: SupabaseClient,
+    id: string,
+    hash: string,
+    list: ReturnType<typeof chunks> = chunks(1),
+    digest?: string,
+  ) {
+    const doc = (await client.from('documents').select('title, content').eq('id', id).single()).data;
+    return client.rpc('replace_document_chunks', {
+      p_document_id: id,
+      p_embedding_model: 'test/model',
+      p_content_hash: hash,
+      p_content_digest: digest ?? documentDigest(doc?.title ?? '', doc?.content ?? ''),
+      p_chunks: list,
+    });
+  }
 
   beforeAll(async () => {
     ({ client: alice, id: aliceId } = await users.signUp('alice'));
@@ -110,12 +129,7 @@ describe.skipIf(!live)('database isolation and retrieval (live)', () => {
   });
 
   it('indexes chunks atomically and retrieves them by similarity', async () => {
-    const indexed = await alice.rpc('replace_document_chunks', {
-      p_document_id: docId,
-      p_embedding_model: 'test/model',
-      p_content_hash: 'h1',
-      p_chunks: chunks(3),
-    });
+    const indexed = await indexAs(alice, docId, 'h1', chunks(3));
     expect(indexed.error).toBeNull();
     const doc = await alice.from('documents').select('indexing_status, content_hash').eq('id', docId).single();
     expect(doc.data).toMatchObject({ indexing_status: 'indexed', content_hash: 'h1' });
@@ -158,6 +172,7 @@ describe.skipIf(!live)('database isolation and retrieval (live)', () => {
       p_document_id: docId,
       p_embedding_model: 'evil',
       p_content_hash: 'x',
+      p_content_digest: documentDigest('Alice notes', 'secret plans'),
       p_chunks: chunks(1),
     });
     expect(error?.code).toBe('P0002');
@@ -192,32 +207,27 @@ describe.skipIf(!live)('database isolation and retrieval (live)', () => {
       begin;
       insert into auth.users (id, aud, role, email)
         values ('${user}', 'authenticated', 'authenticated', 'churn@example.test');
+      insert into public.documents (id, user_id, title, content) values ('${doc}', '${user}', 't', 'c');
+      insert into public.document_chunks (document_id, user_id, chunk_index, content, embedding, embedding_model)
+        select '${doc}', '${user}', g, 'filler', ${filler}, 'm' from generate_series(1, 200) g;
+      delete from public.document_chunks;
+      insert into public.document_chunks (document_id, user_id, chunk_index, content, embedding, embedding_model)
+        values ('${doc}', '${user}', 0, 'a', ${axisVector(0)}, 'm'),
+               ('${doc}', '${user}', 1, 'b', ${axisVector(1)}, 'm'),
+               ('${doc}', '${user}', 2, 'c', ${axisVector(2)}, 'm');
       -- On a big table the planner searches through the vector index; make it do the same here
-      -- (the DDL is rolled back with the transaction).
+      -- (the DDL is rolled back with the transaction). Then search as the signed-in user.
       drop index public.document_chunks_user_idx;
       set local role authenticated;
       set local enable_seqscan = off;
       select set_config('request.jwt.claims', '{"sub":"${user}","role":"authenticated"}', true);
-      insert into public.documents (id, title, content) values ('${doc}', 't', 'c');
-      insert into public.document_chunks (document_id, chunk_index, content, embedding, embedding_model)
-        select '${doc}', g, 'filler', ${filler}, 'm' from generate_series(1, 200) g;
-      delete from public.document_chunks;
-      insert into public.document_chunks (document_id, chunk_index, content, embedding, embedding_model)
-        values ('${doc}', 0, 'a', ${axisVector(0)}, 'm'),
-               ('${doc}', 1, 'b', ${axisVector(1)}, 'm'),
-               ('${doc}', 2, 'c', ${axisVector(2)}, 'm');
       select count(*)::int as found from public.match_chunks(${axisVector(2)}, 3);
       rollback;`);
     expect(rows).toEqual([{ found: 3 }]);
   }, 60000);
 
   it('replaces chunks instead of piling them up', async () => {
-    await alice.rpc('replace_document_chunks', {
-      p_document_id: docId,
-      p_embedding_model: 'test/model',
-      p_content_hash: 'h2',
-      p_chunks: chunks(1),
-    });
+    await indexAs(alice, docId, 'h2');
     const { count } = await alice
       .from('document_chunks')
       .select('id', { count: 'exact', head: true })
@@ -228,12 +238,7 @@ describe.skipIf(!live)('database isolation and retrieval (live)', () => {
   it('moves updated_at only for user edits, not for indexing', async () => {
     const before = (await alice.from('documents').select('updated_at').eq('id', docId).single()).data!;
     await new Promise((r) => setTimeout(r, 1100));
-    await alice.rpc('replace_document_chunks', {
-      p_document_id: docId,
-      p_embedding_model: 'test/model',
-      p_content_hash: 'h3',
-      p_chunks: chunks(1),
-    });
+    await indexAs(alice, docId, 'h3');
     const afterIndex = (await alice.from('documents').select('updated_at').eq('id', docId).single()).data!;
     expect(afterIndex.updated_at).toBe(before.updated_at);
     await alice.from('documents').update({ title: 'Alice notes v2' }).eq('id', docId);
@@ -244,12 +249,14 @@ describe.skipIf(!live)('database isolation and retrieval (live)', () => {
   it('keeps conversations private and messages append-only', async () => {
     const conv = await alice.from('conversations').insert({}).select().single();
     expect(conv.error).toBeNull();
-    const msg = await alice
-      .from('messages')
-      .insert({ conversation_id: conv.data.id, role: 'user', content: 'hi' })
-      .select()
-      .single();
-    expect(msg.error).toBeNull();
+    const exchange = await alice.rpc('append_exchange', {
+      p_conversation_id: conv.data.id,
+      p_user_content: 'hi',
+      p_assistant_content: 'hello',
+      p_sources: [],
+    });
+    expect(exchange.error).toBeNull();
+    const msg = { data: exchange.data[0] as { id: string } };
 
     expect((await bob.from('conversations').select('id')).data).toEqual([]);
     expect((await bob.from('messages').select('id')).data).toEqual([]);
@@ -293,6 +300,182 @@ describe.skipIf(!live)('database isolation and retrieval (live)', () => {
       .select('id', { count: 'exact', head: true })
       .eq('conversation_id', conv.id);
     expect(count).toBe(0);
+  });
+
+  describe('writes that bypassed the API are closed', () => {
+    it('does not let a user insert chunks (and so crowd out other users) directly', async () => {
+      const { error } = await alice.from('document_chunks').insert({
+        document_id: docId,
+        chunk_index: 500,
+        content: 'forged',
+        embedding: JSON.stringify(axis(7)),
+        embedding_model: 'm',
+      });
+      expect(error?.code).toBe('42501');
+    });
+
+    it('does not let a user delete or edit chunks directly', async () => {
+      await indexAs(alice, docId, 'h-direct');
+      const del = await alice.from('document_chunks').delete().eq('document_id', docId).select();
+      expect(del.error?.code).toBe('42501');
+      const upd = await alice.from('document_chunks').update({ content: 'x' }).eq('document_id', docId).select();
+      expect(upd.error?.code).toBe('42501');
+    });
+
+    it('does not let a user write messages directly (forged answers, unbounded storage)', async () => {
+      const conv = (await alice.from('conversations').insert({}).select().single()).data!;
+      const { error } = await alice
+        .from('messages')
+        .insert({ conversation_id: conv.id, role: 'assistant', content: 'forged', sources: [] });
+      expect(error?.code).toBe('42501');
+    });
+
+    it('lets a user edit title, text and tags but not the indexing bookkeeping', async () => {
+      const ok = await alice.from('documents').update({ tags: ['kept'] }).eq('id', docId).select('tags').single();
+      expect(ok.error).toBeNull();
+      expect(ok.data?.tags).toEqual(['kept']);
+      for (const forged of [{ indexing_status: 'indexed' }, { content_hash: 'forged' }, { indexed_at: new Date().toISOString() }, { user_id: bobId }]) {
+        const { error } = await alice.from('documents').update(forged).eq('id', docId);
+        expect(error?.code, JSON.stringify(forged)).toBe('42501');
+      }
+      const created = await alice.from('documents').insert({ title: 'fake', content: 'x', indexing_status: 'indexed' });
+      expect(created.error?.code).toBe('42501');
+    });
+
+    it('limits tags in the database as well', async () => {
+      const tooMany = Array.from({ length: 21 }, (_, i) => `t${i}`);
+      expect((await alice.from('documents').update({ tags: tooMany }).eq('id', docId)).error?.code).toBe('23514');
+      expect((await alice.from('documents').update({ tags: ['x'.repeat(41)] }).eq('id', docId)).error?.code).toBe('23514');
+      expect((await alice.from('documents').update({ tags: [''] }).eq('id', docId)).error?.code).toBe('23514');
+    });
+  });
+
+  describe('indexing results are tied to the version of the text', () => {
+    it('refuses a result for text that has changed since (a stale embedding run)', async () => {
+      await indexAs(alice, docId, 'h-current');
+      const stale = await indexAs(alice, docId, 'h-stale', chunks(2), documentDigest('an older title', 'older text'));
+      expect(stale.error?.code).toBe('P0003');
+      const state = await alice.from('documents').select('content_hash').eq('id', docId).single();
+      expect(state.data?.content_hash).toBe('h-current'); // nothing was overwritten
+    });
+
+    it('does not let a failure about older text mark the current text as failed', async () => {
+      await indexAs(alice, docId, 'h-ok');
+      const ignored = await alice.rpc('mark_indexing_failed', {
+        p_document_id: docId,
+        p_error: 'about an old version',
+        p_content_digest: documentDigest('an older title', 'older text'),
+      });
+      expect(ignored.error).toBeNull();
+      expect((await alice.from('documents').select('indexing_status').eq('id', docId).single()).data?.indexing_status).toBe('indexed');
+    });
+
+    it('records a failure about the current text, shortened, and a later success clears it', async () => {
+      const doc = (await alice.from('documents').select('title, content').eq('id', docId).single()).data!;
+      const marked = await alice.rpc('mark_indexing_failed', {
+        p_document_id: docId,
+        p_error: 'x'.repeat(1000),
+        p_content_digest: documentDigest(doc.title, doc.content),
+      });
+      expect(marked.error).toBeNull();
+      const failed = (await alice.from('documents').select('indexing_status, indexing_error').eq('id', docId).single()).data!;
+      expect(failed.indexing_status).toBe('failed');
+      expect(failed.indexing_error).toHaveLength(300);
+      await indexAs(alice, docId, 'h-recovered');
+      const healed = (await alice.from('documents').select('indexing_status, indexing_error').eq('id', docId).single()).data!;
+      expect(healed).toEqual({ indexing_status: 'indexed', indexing_error: null });
+    });
+
+    it("lets nobody mark another user's document", async () => {
+      const { error } = await bob.rpc('mark_indexing_failed', {
+        p_document_id: docId,
+        p_error: 'sabotage',
+        p_content_digest: documentDigest('Alice notes', 'secret plans'),
+      });
+      expect(error?.code).toBe('P0002');
+    });
+
+    it('serialises overlapping runs: no unique violation, and the stored chunks are one run, not a mix', async () => {
+      const results = await Promise.all([
+        indexAs(alice, docId, 'run-a', chunks(4)),
+        indexAs(alice, docId, 'run-b', chunks(2)),
+        indexAs(alice, docId, 'run-c', chunks(3)),
+      ]);
+      for (const result of results) expect(result.error).toBeNull();
+      const { count } = await alice.from('document_chunks').select('id', { count: 'exact', head: true }).eq('document_id', docId);
+      expect([2, 3, 4]).toContain(count);
+      const hash = (await alice.from('documents').select('content_hash').eq('id', docId).single()).data?.content_hash;
+      expect({ 'run-a': 4, 'run-b': 2, 'run-c': 3 }[hash as string]).toBe(count); // hash and chunks belong together
+    });
+
+    it.each([
+      ['more chunks than allowed', Array.from({ length: 501 }, (_, i) => ({ index: i, content: 'c', tokenCount: 1, embedding: axis(0) }))],
+      ['something that is not a list', { not: 'a list' }],
+    ])('rejects %s', async (_name, list) => {
+      const { error } = await indexAs(alice, docId, 'bad', list as never);
+      expect(error?.code).toBe('22023');
+    }, 60000);
+  });
+
+  describe('exchanges are validated in the database', () => {
+    const exchange = (conversation: string, over: Record<string, unknown> = {}) =>
+      alice.rpc('append_exchange', {
+        p_conversation_id: conversation,
+        p_user_content: 'q',
+        p_assistant_content: 'a',
+        p_sources: [],
+        ...over,
+      });
+
+    it.each([
+      ['a question over 4000 characters', { p_user_content: 'q'.repeat(4001) }],
+      ['an answer over 50000 characters', { p_assistant_content: 'a'.repeat(50001) }],
+      ['sources that are not a list', { p_sources: { not: 'a list' } }],
+    ])('rejects %s', async (_name, over) => {
+      const conv = (await alice.from('conversations').insert({}).select().single()).data!;
+      expect((await exchange(conv.id, over)).error?.code).toBe('22023');
+      const { count } = await admin.from('messages').select('id', { count: 'exact', head: true }).eq('conversation_id', conv.id);
+      expect(count).toBe(0);
+    });
+
+    it('rejects an oversized sources list through the size limit', async () => {
+      const conv = (await alice.from('conversations').insert({}).select().single()).data!;
+      const huge = Array.from({ length: 2000 }, (_, i) => ({ number: i, snippet: 'x'.repeat(100) }));
+      expect((await exchange(conv.id, { p_sources: huge })).error?.code).toBe('23514');
+    });
+
+    it('truncates an over-long new title instead of failing', async () => {
+      const conv = (await alice.from('conversations').insert({}).select().single()).data!;
+      expect((await exchange(conv.id, { p_new_title: 't'.repeat(500) })).error).toBeNull();
+      const title = (await alice.from('conversations').select('title').eq('id', conv.id).single()).data?.title;
+      expect(title).toHaveLength(200);
+    });
+  });
+
+  describe('per-user caps', () => {
+    const outcome = (table: string, columns: string, values: string, userId: string) => `
+      begin;
+      insert into auth.users (id, aud, role, email) values ('${userId}', 'authenticated', 'authenticated', '${userId}@example.test');
+      insert into public.${table} (user_id, ${columns}) select '${userId}', ${values} from generate_series(1, 200) g;
+      create temp table outcome (code text) on commit drop;
+      do $$ begin
+        insert into public.${table} (user_id, ${columns}) select '${userId}', ${values} from generate_series(1, 1) g;
+        insert into outcome values ('inserted');
+      exception when sqlstate 'P0004' then
+        insert into outcome values ('P0004');
+      end $$;
+      select code from outcome;
+      rollback;`;
+
+    it('refuses the 201st document with a recognisable error', async () => {
+      const rows = await sql(outcome('documents', 'title, content', "'t' || g, 'c'", '00000000-0000-4000-8000-0000000000c1'));
+      expect(rows).toEqual([{ code: 'P0004' }]);
+    }, 60000);
+
+    it('refuses the 201st conversation with a recognisable error', async () => {
+      const rows = await sql(outcome('conversations', 'title', "'c' || g", '00000000-0000-4000-8000-0000000000c2'));
+      expect(rows).toEqual([{ code: 'P0004' }]);
+    }, 60000);
   });
 
   it('removes chunks together with their document', async () => {

@@ -39,9 +39,14 @@ class FakeEmbedder implements EmbeddingModel {
   model = 'fake/embed';
   dimensions = 3;
   queries: string[] = [];
+  signals: (AbortSignal | undefined)[] = [];
   failWith: Error | undefined;
-  async embed(texts: string[]) {
+  /** Runs while a query is being embedded (e.g. to cancel the request at that moment). */
+  during: (() => void) | undefined;
+  async embed(texts: string[], options?: { signal?: AbortSignal }) {
     this.queries.push(...texts);
+    this.signals.push(options?.signal);
+    this.during?.();
     if (this.failWith) throw this.failWith;
     return { vectors: texts.map(() => [0.1, 0.2, 0.3]), usage: { totalTokens: 1 } };
   }
@@ -54,6 +59,7 @@ const config = (over: Partial<ChatConfig> = {}): ChatConfig => ({
   historyMessages: 10,
   rewriteQueries: true,
   rateLimitPerMinute: 20,
+  maxConcurrentStreams: 3,
   ...over,
 });
 
@@ -281,6 +287,70 @@ describe('conversations', () => {
   });
 });
 
+
+describe('askStream: leaving before the answer starts', () => {
+  async function drain(svc: ChatService, id: string, signal: AbortSignal) {
+    const events: ChatStreamEvent[] = [];
+    for await (const event of svc.askStream(alice, id, 'q', signal)) events.push(event);
+    return events;
+  }
+
+  it('ends quietly, without an error, when the provider stream was cancelled before any text', async () => {
+    db.corpus = [chunk(1, 0.8)];
+    const svc = service();
+    const conversation = await start(svc);
+    const controller = new AbortController();
+    chat.script = []; // the provider stream ends at once, as it does when it is cancelled
+    controller.abort();
+    expect(await drain(svc, conversation.id, controller.signal)).toEqual([]);
+    expect(db.messages).toHaveLength(0);
+  });
+
+  it('hands the cancellation signal to the search embedding', async () => {
+    db.corpus = [chunk(1, 0.8)];
+    const svc = service();
+    const conversation = await start(svc);
+    const controller = new AbortController();
+    chat.script = ['ok [1]'];
+    await drain(svc, conversation.id, controller.signal);
+    expect(embedder.signals[0]).toBe(controller.signal);
+  });
+
+  it('stops before searching and before the model when the client leaves during the embedding', async () => {
+    db.corpus = [chunk(1, 0.8)];
+    const svc = service();
+    const conversation = await start(svc);
+    const controller = new AbortController();
+    embedder.during = () => controller.abort();
+    expect(await drain(svc, conversation.id, controller.signal)).toEqual([]);
+    expect(db.searches).toHaveLength(0);
+    expect(chat.streamCalls).toHaveLength(0);
+    expect(db.messages).toHaveLength(0);
+  });
+
+  it('does not report a failure for an embedding cut short by the client leaving', async () => {
+    const svc = service();
+    const conversation = await start(svc);
+    const controller = new AbortController();
+    embedder.during = () => {
+      controller.abort();
+      embedder.failWith = new AiProviderError('unavailable', 'aborted');
+    };
+    expect(await drain(svc, conversation.id, controller.signal)).toEqual([]);
+  });
+
+  it('does not spend a rewrite call once the client has left', async () => {
+    db.corpus = [chunk(1, 0.8)];
+    const svc = service();
+    const conversation = await start(svc);
+    await svc.ask(alice, conversation.id, 'first'); // history, so a rewrite would be due
+    chat.calls.length = 0;
+    const controller = new AbortController();
+    controller.abort();
+    expect(await drain(svc, conversation.id, controller.signal)).toEqual([]);
+    expect(chat.calls).toHaveLength(0);
+  });
+});
 
 describe('askStream', () => {
   async function collect(svc: ChatService, question: string, id: string, signal?: AbortSignal) {

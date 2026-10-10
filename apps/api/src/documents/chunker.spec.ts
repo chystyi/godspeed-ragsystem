@@ -118,12 +118,42 @@ describe('chunkText', () => {
     }
   });
 
+  it('cuts text without any separator by force, never inside an emoji', () => {
+    for (const text of ['😀'.repeat(900), 'x'.repeat(900), `${'a'.repeat(849)}😀b`]) {
+      const chunks = chunkText(text, { maxChars: 1000, overlapChars: 150 });
+      for (const chunk of chunks) {
+        expect(chunk.content.length).toBeLessThanOrEqual(1000);
+        expect(chunk.content.isWellFormed()).toBe(true);
+      }
+    }
+  });
+
+  it('handles the smallest useful budget with emoji without crashing', () => {
+    const chunks = chunkText('a😀b😀c', { maxChars: 4, overlapChars: 1 }); // budget 2 per chunk
+    for (const chunk of chunks) {
+      expect(chunk.content.length).toBeLessThanOrEqual(4);
+      expect(chunk.content.isWellFormed()).toBe(true);
+    }
+    expect(chunks.map((c) => c.content).join('')).toContain('😀');
+  });
+
+  it('stays fast for the largest allowed document, even of the worst shape', () => {
+    // 200 000 characters is the documented limit; one request must not stall the server.
+    for (const text of ['.'.repeat(200000), 'a '.repeat(100000), '# '.repeat(100000), '😀'.repeat(100000)]) {
+      const started = performance.now();
+      chunkText(text, { maxChars: 1000, overlapChars: 150 });
+      expect(performance.now() - started).toBeLessThan(4000); // measured ~0.1-0.3 s; generous for busy machines
+    }
+  });
+
   it('works without overlap', () => {
     const chunks = chunkText(document(rng(6), 20), { maxChars: 500, overlapChars: 0 });
     for (const chunk of chunks) expect(chunk.content.length).toBeLessThanOrEqual(500);
   });
 
   it.each([
+    { maxChars: 1, overlapChars: 0 }, // room for one unit: not enough for an emoji
+    { maxChars: 3, overlapChars: 1 },
     { maxChars: 0, overlapChars: 0 },
     { maxChars: 100, overlapChars: 100 },
     { maxChars: 100, overlapChars: -1 },

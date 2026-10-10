@@ -1,4 +1,5 @@
 import type { ChatTurn } from '../ai/ai.types.js';
+import { truncate } from '../text.js';
 
 export interface PromptSource {
   number: number;
@@ -44,7 +45,7 @@ function trimHistory(history: HistoryTurn[], budget: number): HistoryTurn[] {
   const kept: HistoryTurn[] = [];
   let used = 0;
   for (const turn of [...history].reverse()) {
-    const content = turn.content.slice(0, MAX_TURN_CHARS);
+    const content = truncate(turn.content, MAX_TURN_CHARS);
     if (used + content.length > budget) break;
     used += content.length;
     kept.unshift({ role: turn.role, content });
@@ -80,7 +81,7 @@ export function buildAnswerMessages(args: {
 export function buildRewriteMessages(history: HistoryTurn[], question: string): ChatTurn[] {
   const recent = history
     .slice(-4)
-    .map((turn) => `${turn.role}: ${turn.content.slice(0, 500)}`)
+    .map((turn) => `${turn.role}: ${truncate(turn.content, 500)}`)
     .join('\n');
   return [
     {
@@ -112,7 +113,7 @@ const MAX_TITLE = 60;
 export function titleFromQuestion(question: string): string {
   const text = question.replace(/\s+/g, ' ').trim();
   if (text.length <= MAX_TITLE) return text;
-  const cut = text.slice(0, MAX_TITLE);
+  const cut = truncate(text, MAX_TITLE);
   const lastSpace = cut.lastIndexOf(' ');
   return `${(lastSpace > 20 ? cut.slice(0, lastSpace) : cut).trimEnd()}…`;
 }

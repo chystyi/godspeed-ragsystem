@@ -13,6 +13,8 @@ const schema = z.object({
   // One extra, cheap model call that makes follow-up questions searchable.
   CHAT_REWRITE_QUERIES: bool.default(true),
   CHAT_RATE_LIMIT_PER_MINUTE: z.coerce.number().int().min(1).max(1000).default(20),
+  // Answers one user may have streaming at the same time (each holds a model call open).
+  CHAT_MAX_CONCURRENT_STREAMS: z.coerce.number().int().min(1).max(20).default(3),
 });
 
 export interface ChatConfig {
@@ -21,6 +23,7 @@ export interface ChatConfig {
   historyMessages: number;
   rewriteQueries: boolean;
   rateLimitPerMinute: number;
+  maxConcurrentStreams: number;
 }
 
 export const CHAT_CONFIG = Symbol('CHAT_CONFIG');
@@ -41,5 +44,6 @@ export function loadChatConfig(env: Record<string, string | undefined>): ChatCon
     historyMessages: v.CHAT_HISTORY_MESSAGES,
     rewriteQueries: v.CHAT_REWRITE_QUERIES,
     rateLimitPerMinute: v.CHAT_RATE_LIMIT_PER_MINUTE,
+    maxConcurrentStreams: v.CHAT_MAX_CONCURRENT_STREAMS,
   };
 }

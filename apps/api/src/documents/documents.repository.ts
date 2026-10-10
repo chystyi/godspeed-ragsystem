@@ -25,6 +25,8 @@ export interface ChunkToStore {
 export interface ReplaceChunksArgs {
   embeddingModel: string;
   contentHash: string;
+  /** Fingerprint of the title and text that were embedded (see digest.ts). */
+  contentDigest: string;
   chunks: ChunkToStore[];
 }
 
@@ -42,9 +44,13 @@ export interface DocumentsRepository {
   update(id: string, patch: DocumentPatch): Promise<DocumentRecord | null>;
   /** Returns false when the document does not exist (for this user). */
   delete(id: string): Promise<boolean>;
-  /** Atomically swaps all chunks and marks the document indexed. */
+  /**
+   * Atomically swaps all chunks and marks the document indexed. Throws StaleIndexError when the
+   * document changed since `contentDigest` was taken.
+   */
   replaceChunks(id: string, args: ReplaceChunksArgs): Promise<void>;
-  markIndexingFailed(id: string, message: string): Promise<void>;
+  /** Records a failure; ignored when the document changed since `contentDigest` was taken. */
+  markIndexingFailed(id: string, message: string, contentDigest: string): Promise<void>;
 }
 
 export interface DocumentsRepositoryFactory {

@@ -1,5 +1,6 @@
 import type { ChatMessage, ChatSource, Conversation } from '@kb/shared';
 import { createClient, type PostgrestError, type SupabaseClient } from '@supabase/supabase-js';
+import { LimitReachedError, ROW_LIMIT_SQLSTATE } from '../http/limit-error.js';
 import type { SupabaseConfig } from '../supabase/supabase.config.js';
 import {
   type ChatRepository,
@@ -66,6 +67,7 @@ class SupabaseChatRepository implements ChatRepository {
       .insert(title ? { title } : {})
       .select(CONVERSATION_COLUMNS)
       .single();
+    if (error?.code === ROW_LIMIT_SQLSTATE) throw new LimitReachedError('conversations', 200);
     if (error) fail('creating the conversation', error);
     return toConversation(data as unknown as ConversationRow);
   }

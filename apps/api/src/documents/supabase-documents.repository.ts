@@ -9,7 +9,8 @@ import type {
   NewDocument,
   ReplaceChunksArgs,
 } from './documents.repository.js';
-import { DocumentNotFoundError } from './errors.js';
+import { LimitReachedError, ROW_LIMIT_SQLSTATE } from '../http/limit-error.js';
+import { DocumentNotFoundError, StaleIndexError } from './errors.js';
 
 const COLUMNS =
   'id, title, content, tags, indexing_status, indexing_error, indexed_at, content_hash, created_at, updated_at';
@@ -75,6 +76,7 @@ class SupabaseDocumentsRepository implements DocumentsRepository {
 
   async create(input: NewDocument): Promise<DocumentRecord> {
     const { data, error } = await this.client.from('documents').insert(input).select(COLUMNS).single();
+    if (error?.code === ROW_LIMIT_SQLSTATE) throw new LimitReachedError('documents', 200);
     if (error) fail('creating the document', error);
     return toRecord(data as unknown as DocumentRow);
   }
@@ -113,6 +115,7 @@ class SupabaseDocumentsRepository implements DocumentsRepository {
       p_document_id: id,
       p_embedding_model: args.embeddingModel,
       p_content_hash: args.contentHash,
+      p_content_digest: args.contentDigest,
       p_chunks: args.chunks.map((chunk) => ({
         index: chunk.index,
         content: chunk.content,
@@ -121,14 +124,17 @@ class SupabaseDocumentsRepository implements DocumentsRepository {
       })),
     });
     if (error?.code === 'P0002') throw new DocumentNotFoundError(id);
+    if (error?.code === 'P0003') throw new StaleIndexError(id);
     if (error) fail('storing the chunks', error);
   }
 
-  async markIndexingFailed(id: string, message: string): Promise<void> {
-    const { error } = await this.client
-      .from('documents')
-      .update({ indexing_status: 'failed', indexing_error: message })
-      .eq('id', id);
+  async markIndexingFailed(id: string, message: string, contentDigest: string): Promise<void> {
+    const { error } = await this.client.rpc('mark_indexing_failed', {
+      p_document_id: id,
+      p_error: message,
+      p_content_digest: contentDigest,
+    });
+    if (error?.code === 'P0002') throw new DocumentNotFoundError(id);
     if (error) fail('recording the indexing failure', error);
   }
 }

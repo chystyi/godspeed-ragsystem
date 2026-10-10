@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { SlidingWindowLimiter } from './rate-limiter.js';
+import { ConcurrencyLimiter, RateLimitedError, SlidingWindowLimiter } from './rate-limiter.js';
 
 function limiter(limit = 3, windowMs = 60000) {
   const time = { now: 1_000_000 };
@@ -49,5 +49,57 @@ describe('SlidingWindowLimiter', () => {
     time.now += 120_000;
     l.check('someone');
     expect(l.trackedKeys()).toBeLessThan(5);
+  });
+});
+
+describe('SlidingWindowLimiter.enforce', () => {
+  it('counts a request, and throws RateLimitedError with the wait once the limit is reached', () => {
+    const { time, limiter: l } = limiter(2);
+    l.enforce('a');
+    time.now += 5_000;
+    l.enforce('a');
+    let error: unknown;
+    try {
+      l.enforce('a');
+    } catch (caught) {
+      error = caught;
+    }
+    expect(error).toBeInstanceOf(RateLimitedError);
+    expect((error as RateLimitedError).retryAfterSeconds).toBe(55);
+  });
+});
+
+describe('ConcurrencyLimiter', () => {
+  it('hands out up to the limit and then none', () => {
+    const l = new ConcurrencyLimiter(2);
+    expect(l.acquire('a')).not.toBeNull();
+    expect(l.acquire('a')).not.toBeNull();
+    expect(l.acquire('a')).toBeNull();
+    expect(l.active('a')).toBe(2);
+  });
+
+  it('frees a slot when it is released, and releasing twice frees only one', () => {
+    const l = new ConcurrencyLimiter(1);
+    const release = l.acquire('a')!;
+    release();
+    release();
+    expect(l.active('a')).toBe(0);
+    const again = l.acquire('a');
+    expect(again).not.toBeNull();
+    expect(l.acquire('a')).toBeNull(); // the double release did not hand out a second slot
+  });
+
+  it('counts users separately and forgets idle ones', () => {
+    const l = new ConcurrencyLimiter(1);
+    const a = l.acquire('a')!;
+    expect(l.acquire('b')).not.toBeNull();
+    a();
+    expect(l.active('a')).toBe(0);
+  });
+
+  it('require throws RateLimitedError when full', () => {
+    const l = new ConcurrencyLimiter(1);
+    l.require('a');
+    expect(() => l.require('a')).toThrow(RateLimitedError);
   });
 });

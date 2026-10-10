@@ -8,3 +8,6 @@ dist/
 .DS_Store
 *.tsbuildinfo
 supabase/.temp/
+
+# Local tooling that names the Supabase project; keep it out of the repository
+.mcp.json

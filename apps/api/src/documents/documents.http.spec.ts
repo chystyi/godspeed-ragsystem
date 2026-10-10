@@ -7,6 +7,7 @@ import { EMBEDDING_MODEL, type EmbeddingModel } from '../ai/ai.types.js';
 import { AiProviderError } from '../ai/errors.js';
 import { TOKEN_VERIFIER, type TokenVerifier } from '../auth/auth.types.js';
 import { configureApp } from '../http/configure-app.js';
+import { DOCUMENT_WRITE_LIMITER, SlidingWindowLimiter } from '../http/rate-limiter.js';
 import { DOCUMENTS_REPOSITORY_FACTORY } from './documents.repository.js';
 import { DocumentsController } from './documents.controller.js';
 import { DocumentsService } from './documents.service.js';
@@ -35,9 +36,7 @@ let app: INestApplication;
 let db: InMemoryDatabase;
 let embedder: FakeEmbedder;
 
-beforeEach(async () => {
-  db = new InMemoryDatabase();
-  embedder = new FakeEmbedder();
+async function build(writesPerMinute = 1000): Promise<INestApplication> {
   const moduleRef = await Test.createTestingModule({
     controllers: [DocumentsController],
     providers: [
@@ -46,11 +45,19 @@ beforeEach(async () => {
       { provide: DOCUMENTS_REPOSITORY_FACTORY, useValue: db.factory() },
       { provide: EMBEDDING_MODEL, useValue: embedder },
       { provide: TOKEN_VERIFIER, useValue: verifier },
+      { provide: DOCUMENT_WRITE_LIMITER, useValue: new SlidingWindowLimiter(writesPerMinute, 60_000) },
     ],
   }).compile();
-  app = moduleRef.createNestApplication({ bodyParser: false, logger: false });
-  configureApp(app);
-  await app.init();
+  const instance = moduleRef.createNestApplication({ bodyParser: false, logger: false });
+  configureApp(instance);
+  await instance.init();
+  return instance;
+}
+
+beforeEach(async () => {
+  db = new InMemoryDatabase();
+  embedder = new FakeEmbedder();
+  app = await build();
 });
 
 afterEach(async () => {
@@ -117,6 +124,10 @@ describe('creating documents', () => {
     ['empty tag', { title: 't', content: 'x', tags: [''] }],
     ['wrong type', { title: 5, content: 'x' }],
     ['unknown field', { title: 't', content: 'x', userId: 'bob' }],
+    ['a NUL character in the title', { title: 'a\u0000b', content: 'x' }],
+    ['a NUL character in the text', { title: 't', content: 'a\u0000b' }],
+    ['a lone surrogate in the text', { title: 't', content: 'broken \ud83d emoji' }],
+    ['a NUL character in a tag', { title: 't', content: 'x', tags: ['a\u0000'] }],
   ])('rejects %s with 422 and field details', async (_name, body) => {
     const res = await create('alice', body);
     expect(res.status).toBe(422);
@@ -151,7 +162,7 @@ describe('creating documents', () => {
     const res = await create('alice');
     expect(res.status).toBe(201);
     expect(res.body).toMatchObject({ indexingStatus: 'failed' });
-    expect(res.body.indexingError).toContain('HTTP 503');
+    expect(res.body.indexingError).toBe('the AI provider is unavailable');
 
     embedder.failWith = undefined;
     const retry = await server().post(`/api/documents/${res.body.id}/reindex`).set(as('alice'));
@@ -204,6 +215,15 @@ describe('updating documents', () => {
     const res = await server().patch(`/api/documents/${body.id}`).set(as('alice')).send({ tags: ['x'] });
     expect(res.body.tags).toEqual(['x']);
     expect(embedder.calls).toBe(1);
+  });
+
+  it.each([
+    ['a NUL character', { content: 'a\u0000b' }],
+    ['a lone surrogate', { title: 'x\udc00' }],
+  ])('rejects an update with %s as a validation error, not a server error', async (_name, payload) => {
+    const { body } = await create('alice');
+    const res = await server().patch(`/api/documents/${body.id}`).set(as('alice')).send(payload);
+    expect(res.status).toBe(422);
   });
 
   it('rejects an empty update and unknown fields', async () => {
@@ -259,6 +279,7 @@ describe('error format', () => {
         { provide: DOCUMENTS_REPOSITORY_FACTORY, useValue: broken },
         { provide: EMBEDDING_MODEL, useValue: embedder },
         { provide: TOKEN_VERIFIER, useValue: verifier },
+        { provide: DOCUMENT_WRITE_LIMITER, useValue: new SlidingWindowLimiter(1000, 60_000) },
       ],
     }).compile();
     const other = moduleRef.createNestApplication({ bodyParser: false, logger: false });
@@ -269,5 +290,73 @@ describe('error format', () => {
     expect(res.body).toEqual({ code: 'internal_error', message: 'internal server error' });
     expect(res.text).not.toContain('hunter2');
     await other.close();
+  });
+});
+
+describe('limits on writes (each one is embedded, which costs money)', () => {
+  it('refuses writes beyond the per-minute limit with a Retry-After, per user', async () => {
+    await app.close();
+    app = await build(3);
+    for (let i = 0; i < 3; i++) expect((await create('alice', { title: `t${i}`, content: 'x' })).status).toBe(201);
+    const refused = await create('alice', { title: 'one too many', content: 'x' });
+    expect(refused.status).toBe(429);
+    expect(refused.body.code).toBe('too_many_requests');
+    expect(Number(refused.headers['retry-after'])).toBeGreaterThan(0);
+    expect(db.documents.filter((d) => d.title === 'one too many')).toHaveLength(0);
+    expect((await create('bob', { title: 'bob is fine', content: 'x' })).status).toBe(201);
+  });
+
+  it('counts updates and re-indexing, but not reading', async () => {
+    await app.close();
+    app = await build(3);
+    const { body } = await create('alice'); // 1
+    expect((await server().patch(`/api/documents/${body.id}`).set(as('alice')).send({ tags: ['a'] })).status).toBe(200); // 2
+    expect((await server().post(`/api/documents/${body.id}/reindex`).set(as('alice'))).status).toBe(200); // 3
+    for (let i = 0; i < 10; i++) expect((await server().get('/api/documents').set(as('alice'))).status).toBe(200);
+    expect((await server().get(`/api/documents/${body.id}`).set(as('alice'))).status).toBe(200);
+    expect((await server().patch(`/api/documents/${body.id}`).set(as('alice')).send({ tags: ['b'] })).status).toBe(429);
+    expect((await server().post(`/api/documents/${body.id}/reindex`).set(as('alice'))).status).toBe(429);
+    expect((await server().delete(`/api/documents/${body.id}`).set(as('alice'))).status).toBe(204); // deleting is free
+  });
+
+  it('does not use up the quota on invalid or unknown requests', async () => {
+    await app.close();
+    app = await build(2);
+    for (let i = 0; i < 5; i++) expect((await create('alice', { title: '', content: '' })).status).toBe(422);
+    expect((await server().patch('/api/documents/not-a-uuid').set(as('alice')).send({ title: 'x' })).status).toBe(404);
+    expect((await create('alice', { title: 'a', content: 'x' })).status).toBe(201);
+    expect((await create('alice', { title: 'b', content: 'x' })).status).toBe(201);
+    expect((await create('alice', { title: 'c', content: 'x' })).status).toBe(429);
+  });
+});
+
+describe('per-user cap on documents', () => {
+  it('answers 409 with a clear message when the cap is reached, and frees up again after a delete', async () => {
+    db.documentLimit = 2;
+    const first = await create('alice', { title: 'one', content: 'x' });
+    await create('alice', { title: 'two', content: 'x' });
+    const refused = await create('alice', { title: 'three', content: 'x' });
+    expect(refused.status).toBe(409);
+    expect(refused.body.code).toBe('limit_reached');
+    expect(refused.body.message).toMatch(/limit of 2 documents/);
+    expect((await create('bob', { title: 'bob is not affected', content: 'x' })).status).toBe(201);
+    await server().delete(`/api/documents/${first.body.id}`).set(as('alice'));
+    expect((await create('alice', { title: 'three', content: 'x' })).status).toBe(201);
+  });
+});
+
+describe('response headers', () => {
+  it('does not announce the framework and tells browsers not to guess types or cache private data', async () => {
+    const res = await server().get('/api/documents').set(as('alice'));
+    expect(res.headers['x-powered-by']).toBeUndefined();
+    expect(res.headers['x-content-type-options']).toBe('nosniff');
+    expect(res.headers['cache-control']).toMatch(/no-store/);
+  });
+
+  it('applies to error responses too', async () => {
+    const res = await server().get('/api/documents');
+    expect(res.status).toBe(401);
+    expect(res.headers['x-powered-by']).toBeUndefined();
+    expect(res.headers['x-content-type-options']).toBe('nosniff');
   });
 });

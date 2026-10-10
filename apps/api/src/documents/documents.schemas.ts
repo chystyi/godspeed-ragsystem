@@ -1,9 +1,16 @@
 import { z } from 'zod';
+import { isStorableText } from '../text.js';
 
-const title = z.string().trim().min(1).max(200);
-const content = z.string().refine((value) => value.trim() !== '', 'must not be blank').max(200000);
+const STORABLE = 'contains characters that cannot be stored';
+
+const title = z.string().trim().min(1).max(200).refine(isStorableText, STORABLE);
+const content = z
+  .string()
+  .refine((value) => value.trim() !== '', 'must not be blank')
+  .max(200000)
+  .refine(isStorableText, STORABLE);
 const tags = z
-  .array(z.string().trim().toLowerCase().min(1).max(40))
+  .array(z.string().trim().toLowerCase().min(1).max(40).refine(isStorableText, STORABLE))
   .max(20)
   .transform((list) => [...new Set(list)]);
 
