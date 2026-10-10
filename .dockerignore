@@ -1,0 +1,11 @@
+.git
+.env
+.env.*
+!.env.example
+.mcp.json
+**/node_modules
+**/.next
+**/dist
+**/.turbo
+**/*.tsbuildinfo
+supabase/.temp
