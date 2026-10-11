@@ -71,7 +71,7 @@ export class ChatController {
   ): Promise<SendMessageResult> {
     // After validation, so requests that are rejected as invalid do not use up the quota.
     this.questions.enforce(user.id);
-    return this.chat.ask(user, id, body.content);
+    return this.chat.ask(user, id, body.content, body.model);
   }
 
   /**
@@ -89,20 +89,26 @@ export class ChatController {
     this.questions.enforce(user.id);
     const release = this.streams.require(user.id);
     try {
-      await this.streamAnswer(user, id, body.content, response);
+      await this.streamAnswer(user, id, body.content, body.model, response);
     } finally {
       release();
     }
   }
 
-  private async streamAnswer(user: AuthUser, id: string, content: string, response: Response): Promise<void> {
+  private async streamAnswer(
+    user: AuthUser,
+    id: string,
+    content: string,
+    model: string | undefined,
+    response: Response,
+  ): Promise<void> {
     const cancelled = new AbortController();
     // If the connection ends before we finished, stop work (and spending) on this answer.
     response.on('close', () => {
       if (!response.writableFinished) cancelled.abort();
     });
 
-    const events = this.chat.askStream(user, id, content, cancelled.signal);
+    const events = this.chat.askStream(user, id, content, cancelled.signal, model);
     const first = await events.next(); // throws: handled like any other request
 
     response.status(200).set({

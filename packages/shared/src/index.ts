@@ -88,3 +88,9 @@ export interface ApiError {
   message: string;
   details?: unknown;
 }
+
+/** The chat models a user may pick from; `default` is used when none is chosen. */
+export interface ChatModelChoices {
+  default: string;
+  models: string[];
+}

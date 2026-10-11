@@ -3,6 +3,7 @@ import { act, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { ApiRequestError } from "@/lib/errors";
+import { resetUseModelForTests } from "@/lib/use-model";
 
 const mocks = vi.hoisted(() => ({
   pathname: "/chat/c1",
@@ -13,6 +14,7 @@ const mocks = vi.hoisted(() => ({
   chat: { conversationId: "c1" as string | null, pending: null as unknown, error: null as string | null, busy: false },
   conversation: { data: undefined as unknown, error: undefined as unknown, isLoading: false },
   documents: { data: [{ id: "d" }] as unknown },
+  models: { data: undefined as unknown },
   saved: undefined as undefined | ((id: string) => Promise<void> | void),
   mutate: vi.fn(async () => undefined),
 }));
@@ -33,6 +35,7 @@ vi.mock("@/lib/api", () => ({ api: { deleteConversation: mocks.deleteConversatio
 vi.mock("@/lib/hooks", () => ({
   useConversation: () => mocks.conversation,
   useDocuments: () => mocks.documents,
+  useModels: () => mocks.models,
 }));
 vi.mock("@/lib/use-chat", () => ({
   useChat: (options: { onExchangeSaved: (id: string) => Promise<void> | void }) => {
@@ -57,6 +60,10 @@ beforeEach(() => {
   mocks.stop.mockReset();
   mocks.deleteConversation.mockReset();
   mocks.mutate.mockClear();
+  mocks.models = { data: undefined };
+  mocks.send.mockClear();
+  localStorage.clear();
+  resetUseModelForTests();
   mocks.chat = { conversationId: "c1", pending: null, error: null, busy: false };
   mocks.conversation = { data: stored, error: undefined, isLoading: false };
   mocks.documents = { data: [{ id: "d" }] };
@@ -151,5 +158,26 @@ describe("ChatView", () => {
       render(<ChatView conversationId="c1" />);
       expect(screen.getByRole("button", { name: "Delete conversation" })).toBeDisabled();
     });
+  });
+});
+
+describe("ChatView model choice", () => {
+  it("sends the question with the model picked next to the composer", async () => {
+    mocks.conversation = { data: stored, error: undefined, isLoading: false };
+    mocks.models = { data: { default: "a/model", models: ["a/model", "b/model"] } };
+    const user = userEvent.setup();
+    render(<ChatView conversationId="c1" />);
+    await user.selectOptions(screen.getByLabelText("Model"), "b/model");
+    await user.type(screen.getByLabelText("Your question"), "Hi{Enter}");
+    expect(mocks.send).toHaveBeenCalledExactlyOnceWith("Hi", "b/model");
+  });
+
+  it("sends the default model until another one is picked", async () => {
+    mocks.conversation = { data: stored, error: undefined, isLoading: false };
+    mocks.models = { data: { default: "a/model", models: ["a/model", "b/model"] } };
+    const user = userEvent.setup();
+    render(<ChatView conversationId="c1" />);
+    await user.type(screen.getByLabelText("Your question"), "Hi{Enter}");
+    expect(mocks.send).toHaveBeenCalledExactlyOnceWith("Hi", "a/model");
   });
 });

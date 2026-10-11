@@ -79,6 +79,17 @@ const setup = (id: string | null = "conv-1") =>
   renderHook(() => useChat({ initialConversationId: id, onExchangeSaved: saved }));
 
 describe("useChat", () => {
+  it("asks with the chosen model", async () => {
+    const stream = controlledStream();
+    mocks.streamAnswer.mockImplementation((_id, _q, signal) => stream.iterate(signal));
+    const { result } = setup();
+    act(() => {
+      void result.current.send("Hi", "b/model");
+    });
+    await waitFor(() => expect(mocks.streamAnswer).toHaveBeenCalledWith("conv-1", "Hi", expect.any(AbortSignal), "b/model"));
+    stream.end();
+  });
+
   it("shows the question at once, then the sources and the growing answer", async () => {
     const stream = controlledStream();
     mocks.streamAnswer.mockImplementation((_id, _q, signal) => stream.iterate(signal));
@@ -119,7 +130,7 @@ describe("useChat", () => {
     act(() => {
       sending = result.current.send("First question");
     });
-    await waitFor(() => expect(mocks.streamAnswer).toHaveBeenCalledWith("new-1", "First question", expect.any(AbortSignal)));
+    await waitFor(() => expect(mocks.streamAnswer).toHaveBeenCalledWith("new-1", "First question", expect.any(AbortSignal), undefined));
     expect(result.current.conversationId).toBe("new-1");
 
     await act(async () => {

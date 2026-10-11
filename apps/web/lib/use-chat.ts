@@ -40,7 +40,7 @@ export function useChat({ initialConversationId, onExchangeSaved }: UseChatOptio
 
   /** Returns false when the question could not be sent, so the caller can keep the text. */
   const send = useCallback(
-    async (question: string): Promise<boolean> => {
+    async (question: string, model?: string): Promise<boolean> => {
       if (controller.current) return false;
       const abort = new AbortController();
       controller.current = abort;
@@ -56,7 +56,7 @@ export function useChat({ initialConversationId, onExchangeSaved }: UseChatOptio
           id = (await api.createConversation(undefined, abort.signal)).id;
           setConversationId(id);
         }
-        for await (const event of streamAnswer(id, question, abort.signal)) {
+        for await (const event of streamAnswer(id, question, abort.signal, model)) {
           if (event.type === "start") {
             update({ sources: event.sources, status: "streaming" });
           } else if (event.type === "delta") {

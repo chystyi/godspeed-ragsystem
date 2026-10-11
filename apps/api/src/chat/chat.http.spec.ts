@@ -9,6 +9,7 @@ import { afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { InMemoryChatDatabase } from '../../test/in-memory-chat.js';
 import {
   CHAT_MODEL,
+  CHAT_MODEL_CHOICES,
   type ChatCompletion,
   type ChatModel,
   EMBEDDING_MODEL,
@@ -18,6 +19,7 @@ import { AiProviderError } from '../ai/errors.js';
 import { TOKEN_VERIFIER, type TokenVerifier } from '../auth/auth.types.js';
 import { configureApp } from '../http/configure-app.js';
 import { CHAT_CONFIG, type ChatConfig } from './chat.config.js';
+import { ModelsController } from './models.controller.js';
 import { ChatController } from './chat.controller.js';
 import { CHAT_REPOSITORY_FACTORY } from './chat.repository.js';
 import { ChatService } from './chat.service.js';
@@ -76,15 +78,17 @@ async function build(rateLimit = 20, maxStreams = 3): Promise<INestApplication> 
     rewriteQueries: false,
     rateLimitPerMinute: rateLimit,
     maxConcurrentStreams: maxStreams,
+    allowGeneralAnswers: false,
   };
   const moduleRef = await Test.createTestingModule({
-    controllers: [ChatController],
+    controllers: [ChatController, ModelsController],
     providers: [
       ChatService,
       { provide: CHAT_REPOSITORY_FACTORY, useValue: db.factory() },
       { provide: CHAT_MODEL, useValue: chat },
       { provide: EMBEDDING_MODEL, useValue: embedder },
       { provide: CHAT_CONFIG, useValue: config },
+      { provide: CHAT_MODEL_CHOICES, useValue: ['fake/chat', 'fake/other'] },
       { provide: CHAT_LIMITER, useValue: new SlidingWindowLimiter(rateLimit, 60_000) },
       { provide: STREAM_LIMITER, useValue: new ConcurrencyLimiter(maxStreams) },
       { provide: TOKEN_VERIFIER, useValue: verifier },
@@ -139,6 +143,7 @@ describe('authentication', () => {
       ['get', `/api/conversations/${id}`],
       ['delete', `/api/conversations/${id}`],
       ['post', `/api/conversations/${id}/messages`],
+      ['get', '/api/models'],
     ] as const) {
       const res = await http()[method](path);
       expect(res.status, `${method} ${path}`).toBe(401);
@@ -499,5 +504,44 @@ describe('answers running at the same time', () => {
     expect((await streamOf(a.id, 'alice')).status).toBe(429);
     chat.parts = ['fine'];
     expect((await streamOf(a.id, 'alice')).status).toBe(200);
+  });
+});
+
+describe('choosing the chat model', () => {
+  it('lists the available models with the default first', async () => {
+    const res = await http().get('/api/models').set('Authorization', 'Bearer token-alice');
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual({ default: 'fake/chat', models: ['fake/chat', 'fake/other'] });
+  });
+
+  it('answers with a model from the list', async () => {
+    const { id } = await newConversation();
+    const res = await http()
+      .post(`/api/conversations/${id}/messages`)
+      .set('Authorization', 'Bearer token-alice')
+      .send({ content: 'How do I secure the router?', model: 'fake/other' });
+    expect(res.status).toBe(201);
+  });
+
+  it('rejects a model that is not on the list with 422, before anything is saved', async () => {
+    const { id } = await newConversation();
+    const res = await http()
+      .post(`/api/conversations/${id}/messages`)
+      .set('Authorization', 'Bearer token-alice')
+      .send({ content: 'How do I secure the router?', model: 'evil/expensive-model' });
+    expect(res.status).toBe(422);
+    expect(res.body.code).toBe('validation_error');
+    expect(res.body.details).toEqual([expect.objectContaining({ path: 'model' })]);
+    const stored = await http().get(`/api/conversations/${id}`).set('Authorization', 'Bearer token-alice');
+    expect(stored.body.messages).toHaveLength(0);
+  });
+
+  it('rejects an unlisted model on the streaming route as an ordinary error', async () => {
+    const { id } = await newConversation();
+    const res = await http()
+      .post(`/api/conversations/${id}/messages/stream`)
+      .set('Authorization', 'Bearer token-alice')
+      .send({ content: 'How do I secure the router?', model: 'evil/expensive-model' });
+    expect(res.status).toBe(422);
   });
 });

@@ -110,7 +110,7 @@ export function createChatModel(config: ChatConfig): ChatModel {
       let response: AsyncIterable<OpenAI.Chat.Completions.ChatCompletionChunk>;
       try {
         response = await sdk.chat.completions.create(
-          { ...requestBody(config.model, messages, options), stream: true },
+          { ...requestBody(options.model ?? config.model, messages, options), stream: true },
           { signal: options.signal },
         );
       } catch (error) {
@@ -138,7 +138,7 @@ export function createChatModel(config: ChatConfig): ChatModel {
       let response: OpenAI.Chat.Completions.ChatCompletion;
       try {
         response = await sdk.chat.completions.create(
-          requestBody(config.model, messages, options),
+          requestBody(options.model ?? config.model, messages, options),
           { signal: options.signal },
         );
       } catch (error) {

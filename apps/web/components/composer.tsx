@@ -12,9 +12,13 @@ interface ComposerProps {
   onSend: (text: string) => Promise<boolean>;
   onStop: () => void;
   disabled?: boolean;
+  /** Chat models to choose from; the choice is hidden when there is nothing to choose. */
+  models?: string[];
+  model?: string;
+  onModelChange?: (model: string) => void;
 }
 
-export function Composer({ busy, onSend, onStop, disabled }: ComposerProps) {
+export function Composer({ busy, onSend, onStop, disabled, models, model, onModelChange }: ComposerProps) {
   const [text, setText] = useState("");
   const field = useRef<HTMLTextAreaElement>(null);
   const tooLong = text.length > MAX_QUESTION;
@@ -57,7 +61,7 @@ export function Composer({ busy, onSend, onStop, disabled }: ComposerProps) {
                 void submit();
               }
             }}
-            placeholder="Ask about your documents"
+            placeholder="Ask a question"
             aria-invalid={tooLong || undefined}
             className="max-h-[200px] min-h-10 flex-1 resize-none bg-transparent px-2 py-2 text-[15px] leading-6 text-ink placeholder:text-muted focus-visible:outline-none disabled:cursor-not-allowed"
           />
@@ -88,6 +92,23 @@ export function Composer({ busy, onSend, onStop, disabled }: ComposerProps) {
           <span className="hidden items-center gap-1.5 sm:flex">
             <Kbd>Enter</Kbd> to send <Kbd>Shift</Kbd>+<Kbd>Enter</Kbd> for a new line
           </span>
+          {models && models.length > 1 && onModelChange && (
+            <label className="ml-auto flex min-w-0 items-center gap-1.5">
+              <span className="sr-only">Model</span>
+              <select
+                value={model}
+                disabled={busy}
+                onChange={(event) => onModelChange(event.target.value)}
+                className="max-w-[14rem] truncate rounded-md border border-line bg-surface px-2 py-1 text-xs text-muted hover:text-ink disabled:opacity-50"
+              >
+                {models.map((name) => (
+                  <option key={name} value={name}>
+                    {name}
+                  </option>
+                ))}
+              </select>
+            </label>
+          )}
           {text.length > MAX_QUESTION - 500 && (
             <span role={tooLong ? "alert" : undefined} className={tooLong ? "text-red-ink" : undefined}>
               {text.length.toLocaleString("en-US")} / {MAX_QUESTION.toLocaleString("en-US")}

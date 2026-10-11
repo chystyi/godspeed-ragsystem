@@ -88,3 +88,28 @@ describe("Composer", () => {
     expect(field).toBeDisabled();
   });
 });
+
+describe("Composer model choice", () => {
+  const models = ["a/model", "b/model"];
+
+  it("offers the models and reports the choice", async () => {
+    const user = userEvent.setup();
+    const onModelChange = vi.fn();
+    setup({ models, model: "a/model", onModelChange });
+    const select = screen.getByLabelText("Model") as HTMLSelectElement;
+    expect([...select.options].map((option) => option.value)).toEqual(models);
+    expect(select).toHaveValue("a/model");
+    await user.selectOptions(select, "b/model");
+    expect(onModelChange).toHaveBeenCalledExactlyOnceWith("b/model");
+  });
+
+  it("shows no choice when there is only one model, or the list is unknown", () => {
+    setup({ models: ["a/model"], model: "a/model", onModelChange: vi.fn() });
+    expect(screen.queryByLabelText("Model")).toBeNull();
+  });
+
+  it("cannot be changed while an answer is being written", () => {
+    setup({ models, model: "a/model", onModelChange: vi.fn(), busy: true });
+    expect(screen.getByLabelText("Model")).toBeDisabled();
+  });
+});

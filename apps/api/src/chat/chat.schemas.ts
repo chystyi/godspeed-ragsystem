@@ -14,6 +14,8 @@ export const sendMessageSchema = z
       .refine((value) => value.trim() !== '', 'must not be blank')
       .max(4000)
       .refine(isStorableText, STORABLE),
+    /** One of the configured chat models; checked against the list by the service. */
+    model: z.string().trim().min(1).max(200).optional(),
   })
   .strict();
 

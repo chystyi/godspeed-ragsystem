@@ -15,6 +15,9 @@ const schema = z.object({
   CHAT_RATE_LIMIT_PER_MINUTE: z.coerce.number().int().min(1).max(1000).default(20),
   // Answers one user may have streaming at the same time (each holds a model call open).
   CHAT_MAX_CONCURRENT_STREAMS: z.coerce.number().int().min(1).max(20).default(3),
+  // When nothing in the documents is related, still let the model answer (greetings, general
+  // questions) instead of refusing. Such answers carry no sources.
+  CHAT_ALLOW_GENERAL_ANSWERS: bool.default(true),
 });
 
 export interface ChatConfig {
@@ -24,6 +27,7 @@ export interface ChatConfig {
   rewriteQueries: boolean;
   rateLimitPerMinute: number;
   maxConcurrentStreams: number;
+  allowGeneralAnswers: boolean;
 }
 
 export const CHAT_CONFIG = Symbol('CHAT_CONFIG');
@@ -45,5 +49,6 @@ export function loadChatConfig(env: Record<string, string | undefined>): ChatCon
     rewriteQueries: v.CHAT_REWRITE_QUERIES,
     rateLimitPerMinute: v.CHAT_RATE_LIMIT_PER_MINUTE,
     maxConcurrentStreams: v.CHAT_MAX_CONCURRENT_STREAMS,
+    allowGeneralAnswers: v.CHAT_ALLOW_GENERAL_ANSWERS,
   };
 }

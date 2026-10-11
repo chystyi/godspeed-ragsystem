@@ -1,19 +1,22 @@
 import { Logger } from '@nestjs/common';
 import { beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { InMemoryChatDatabase } from '../../test/in-memory-chat.js';
-import type { ChatCompletion, ChatModel, ChatTurn, EmbeddingModel } from '../ai/ai.types.js';
+import type { ChatCompletion, ChatModel, ChatOptions, ChatTurn, EmbeddingModel } from '../ai/ai.types.js';
 import { AiProviderError } from '../ai/errors.js';
 import type { AuthUser } from '../auth/auth.types.js';
 import type { ChatConfig } from './chat.config.js';
 import { ConversationNotFoundError, type RetrievedChunk } from './chat.repository.js';
 import { ChatService, NO_ANSWER_TEXT } from './chat.service.js';
+import { ValidationFailedError } from '../http/validation.js';
 import type { ChatStreamEvent } from '@kb/shared';
 
 class FakeChat implements ChatModel {
   calls: ChatTurn[][] = [];
+  options: (ChatOptions | undefined)[] = [];
   replies: (string | Error)[] = [];
-  async complete(messages: ChatTurn[]): Promise<ChatCompletion> {
+  async complete(messages: ChatTurn[], options?: ChatOptions): Promise<ChatCompletion> {
     this.calls.push(messages);
+    this.options.push(options);
     const next = this.replies.shift() ?? 'default answer';
     if (next instanceof Error) throw next;
     return { content: next, model: 'fake/chat' };
@@ -23,8 +26,10 @@ class FakeChat implements ChatModel {
   /** Parts of the next streamed answer; an Error in the list is thrown at that point. */
   script: (string | Error)[] | undefined;
   onPart: ((index: number) => void) | undefined;
-  async *stream(messages: ChatTurn[]): AsyncGenerator<string> {
+  streamOptions: (ChatOptions | undefined)[] = [];
+  async *stream(messages: ChatTurn[], options?: ChatOptions): AsyncGenerator<string> {
     this.streamCalls.push(messages);
+    this.streamOptions.push(options);
     const parts = this.script ?? [this.replies.shift() ?? 'default answer'];
     this.script = undefined;
     for (const [i, part] of parts.entries()) {
@@ -60,8 +65,11 @@ const config = (over: Partial<ChatConfig> = {}): ChatConfig => ({
   rewriteQueries: true,
   rateLimitPerMinute: 20,
   maxConcurrentStreams: 3,
+  allowGeneralAnswers: false, // the strict behavior; the tests of the general mode switch it on
   ...over,
 });
+
+const MODELS = ['fake/chat', 'fake/other'];
 
 const chunk = (n: number, similarity: number, over: Partial<RetrievedChunk> = {}): RetrievedChunk => ({
   chunkId: `c${n}`,
@@ -77,7 +85,7 @@ let db: InMemoryChatDatabase;
 let chat: FakeChat;
 let embedder: FakeEmbedder;
 const service = (over: Partial<ChatConfig> = {}) =>
-  new ChatService(db.factory(), chat, embedder, config(over));
+  new ChatService(db.factory(), chat, embedder, config(over), MODELS);
 
 beforeAll(() => {
   Logger.overrideLogger(false);
@@ -87,6 +95,12 @@ beforeEach(() => {
   chat = new FakeChat();
   embedder = new FakeEmbedder();
 });
+
+async function collect(svc: ChatService, question: string, id: string, signal?: AbortSignal, model?: string) {
+  const events: ChatStreamEvent[] = [];
+  for await (const event of svc.askStream(alice, id, question, signal, model)) events.push(event);
+  return events;
+}
 
 async function start(svc: ChatService, user = alice) {
   return svc.createConversation(user, undefined);
@@ -353,12 +367,6 @@ describe('askStream: leaving before the answer starts', () => {
 });
 
 describe('askStream', () => {
-  async function collect(svc: ChatService, question: string, id: string, signal?: AbortSignal) {
-    const events: ChatStreamEvent[] = [];
-    for await (const event of svc.askStream(alice, id, question, signal)) events.push(event);
-    return events;
-  }
-
   it('emits start (sources), the text parts and done (stored messages), in that order', async () => {
     db.corpus = [chunk(1, 0.8), chunk(2, 0.5)];
     chat.script = ['It is ', 'in the first ', 'passage [1].'];
@@ -472,5 +480,96 @@ describe('askStream', () => {
     expect(embedder.queries).toEqual(['standalone query']);
     expect(chat.streamCalls[0].map((m) => m.role)).toEqual(['system', 'user', 'assistant', 'user']);
     expect(chat.streamCalls[0].at(-1)!.content).toContain('Question: and how do I turn it off?');
+  });
+});
+
+describe('general answers (nothing in the documents is related)', () => {
+  beforeEach(() => {
+    db.corpus = [chunk(1, 0.1)];
+  });
+
+  it('lets the model answer without sources instead of refusing', async () => {
+    chat.replies = ['Hello! How can I help?'];
+    const svc = service({ allowGeneralAnswers: true });
+    const conversation = await start(svc);
+    const { assistantMessage } = await svc.ask(alice, conversation.id, 'Hello');
+    expect(chat.calls).toHaveLength(1);
+    expect(assistantMessage.content).toBe('Hello! How can I help?');
+    expect(assistantMessage.sources).toEqual([]);
+  });
+
+  it('sends no <source> elements, and the conversation so far, in the prompt', async () => {
+    const svc = service({ allowGeneralAnswers: true });
+    const conversation = await start(svc);
+    await svc.ask(alice, conversation.id, 'Hello');
+    await svc.ask(alice, conversation.id, 'And who are you?');
+    const messages = chat.calls.at(-1) ?? [];
+    expect(messages.some((m) => m.content.includes('<source'))).toBe(false);
+    expect(messages.at(-1)?.content).toContain('And who are you?');
+    expect(messages.some((m) => m.role === 'assistant')).toBe(true);
+  });
+
+  it('streams the general answer as start, text and done', async () => {
+    chat.script = ['Hi', ' there'];
+    const svc = service({ allowGeneralAnswers: true });
+    const conversation = await start(svc);
+    const events = await collect(svc, 'Hello', conversation.id);
+    expect(events.map((e) => e.type)).toEqual(['start', 'delta', 'delta', 'done']);
+    expect(chat.streamCalls).toHaveLength(1);
+  });
+
+  it('still refuses when switched off', async () => {
+    const svc = service({ allowGeneralAnswers: false });
+    const conversation = await start(svc);
+    const { assistantMessage } = await svc.ask(alice, conversation.id, 'Hello');
+    expect(assistantMessage.content).toBe(NO_ANSWER_TEXT);
+    expect(chat.calls).toHaveLength(0);
+  });
+
+  it('keeps answering from the documents when they are related', async () => {
+    db.corpus = [chunk(1, 0.8)];
+    chat.replies = ['From the document [1].'];
+    const svc = service({ allowGeneralAnswers: true });
+    const conversation = await start(svc);
+    const { assistantMessage } = await svc.ask(alice, conversation.id, 'What?');
+    expect(chat.calls[0].some((m) => m.content.includes('<source id="1"'))).toBe(true);
+    expect(assistantMessage.sources).toHaveLength(1);
+  });
+});
+
+describe('choosing the chat model', () => {
+  it('passes the chosen model to the answer, and nothing when none was chosen', async () => {
+    db.corpus = [chunk(1, 0.8)];
+    const svc = service({ rewriteQueries: false });
+    const conversation = await start(svc);
+    await svc.ask(alice, conversation.id, 'What?', 'fake/other');
+    await svc.ask(alice, conversation.id, 'And?');
+    expect(chat.options.at(-2)?.model).toBe('fake/other');
+    expect(chat.options.at(-1)?.model).toBeUndefined();
+  });
+
+  it('passes it to a streamed answer as well', async () => {
+    db.corpus = [chunk(1, 0.8)];
+    const svc = service();
+    const conversation = await start(svc);
+    await collect(svc, 'What?', conversation.id, undefined, 'fake/other');
+    expect(chat.streamOptions[0]?.model).toBe('fake/other');
+  });
+
+  it('refuses a model that is not on the list before doing any work', async () => {
+    const svc = service();
+    const conversation = await start(svc);
+    await expect(svc.ask(alice, conversation.id, 'What?', 'evil/expensive-model')).rejects.toBeInstanceOf(
+      ValidationFailedError,
+    );
+    await expect(collect(svc, 'What?', conversation.id, undefined, 'evil/expensive-model')).rejects.toBeInstanceOf(
+      ValidationFailedError,
+    );
+    expect(embedder.queries).toHaveLength(0);
+    expect(chat.calls).toHaveLength(0);
+  });
+
+  it('lists the available models, default first', () => {
+    expect(service().availableModels()).toEqual({ default: 'fake/chat', models: ['fake/chat', 'fake/other'] });
   });
 });

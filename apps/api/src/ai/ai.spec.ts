@@ -41,6 +41,14 @@ const embeddingConfig = (over: Partial<Parameters<typeof createEmbeddingModel>[0
 });
 
 describe('chat model', () => {
+  it('uses the model of the request instead of the configured one, for answers and streams', async () => {
+    server.setHandler(() => chatReply('ok', 'b/model'));
+    await createChatModel(chatConfig()).complete([{ role: 'user', content: 'hi' }], { model: 'b/model' });
+    expect(server.requests[0].body.model).toBe('b/model');
+    await createChatModel(chatConfig()).complete([{ role: 'user', content: 'hi' }]);
+    expect(server.requests[1].body.model).toBe('test/chat-model');
+  });
+
   it('sends model, messages and bearer key, and returns content with token usage', async () => {
     server.setHandler(() => chatReply('Hello there', 'test/chat-model'));
     const result = await createChatModel(chatConfig()).complete(

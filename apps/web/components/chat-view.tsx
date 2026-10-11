@@ -13,8 +13,9 @@ import { IconButton } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import { api } from "@/lib/api";
 import { ApiRequestError, describeError } from "@/lib/errors";
-import { useConversation, useDocuments } from "@/lib/hooks";
+import { useConversation, useDocuments, useModels } from "@/lib/hooks";
 import { useChat } from "@/lib/use-chat";
+import { useChosenModel } from "@/lib/use-model";
 
 interface ChatViewProps {
   conversationId: string | null;
@@ -27,6 +28,8 @@ export function ChatView({ conversationId, onConversationCreated }: ChatViewProp
   const router = useRouter();
   const pathname = usePathname();
   const { mutate } = useSWRConfig();
+  const { data: modelChoices } = useModels();
+  const [model, chooseModel] = useChosenModel(modelChoices);
   const chat = useChat({
     initialConversationId: conversationId,
     onExchangeSaved: async (id) => {
@@ -123,7 +126,7 @@ export function ChatView({ conversationId, onConversationCreated }: ChatViewProp
               <p className="mx-auto mt-3 max-w-md text-muted">
                 {noDocuments
                   ? "You have no documents yet. Add one first, then come back and ask about it."
-                  : "Answers come only from what you have written, with the passages they are based on."}
+                  : "Answers use what you have written and show the passages they are based on. Anything else is answered as a normal conversation."}
               </p>
               {noDocuments && (
                 <Link href="/documents/new" className="mt-5 inline-block text-sm font-medium text-ink underline underline-offset-4">
@@ -150,7 +153,15 @@ export function ChatView({ conversationId, onConversationCreated }: ChatViewProp
             <Alert>{chat.error ?? deleteError}</Alert>
           </div>
         )}
-        <Composer busy={chat.busy} onSend={chat.send} onStop={chat.stop} disabled={gone} />
+        <Composer
+          busy={chat.busy}
+          onSend={(text) => chat.send(text, model)}
+          onStop={chat.stop}
+          disabled={gone}
+          models={modelChoices?.models}
+          model={model}
+          onModelChange={chooseModel}
+        />
       </div>
 
       <ConfirmDialog

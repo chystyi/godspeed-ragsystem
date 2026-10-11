@@ -16,6 +16,8 @@ const schema = z.object({
   AI_BASE_URL: z.string().url(),
   AI_API_KEY: z.string().min(1),
   AI_CHAT_MODEL: z.string().min(1),
+  // Optional: more chat models users may choose from (comma separated). AI_CHAT_MODEL stays the default.
+  AI_CHAT_MODELS: z.string().optional(),
   AI_EMBEDDING_MODEL: z.string().min(1),
   AI_EMBEDDING_DIMENSIONS: z.coerce.number().int().positive().default(1536),
   AI_EMBEDDING_SEND_DIMENSIONS: bool.default(true),
@@ -28,6 +30,8 @@ const schema = z.object({
 
 export interface AiConfig {
   chat: ChatConfig;
+  /** Models users may choose from; the first is the default. */
+  chatModels: string[];
   embeddings: EmbeddingConfig;
 }
 
@@ -49,7 +53,9 @@ export function loadAiConfig(env: Record<string, string | undefined>): AiConfig 
   }
   const v = parsed.data;
   const connection = { timeoutMs: v.AI_TIMEOUT_MS, maxRetries: v.AI_MAX_RETRIES };
+  const extra = (v.AI_CHAT_MODELS ?? '').split(',').map((name) => name.trim()).filter(Boolean);
   return {
+    chatModels: [...new Set([v.AI_CHAT_MODEL, ...extra])],
     chat: { baseURL: v.AI_BASE_URL, apiKey: v.AI_API_KEY, model: v.AI_CHAT_MODEL, ...connection },
     embeddings: {
       baseURL: v.AI_EMBEDDING_BASE_URL ?? v.AI_BASE_URL,

@@ -1,6 +1,6 @@
 import { Global, Module } from '@nestjs/common';
 import { type AiConfig, loadAiConfig } from '../config/ai-config.js';
-import { CHAT_MODEL, EMBEDDING_MODEL } from './ai.types.js';
+import { CHAT_MODEL, CHAT_MODEL_CHOICES, EMBEDDING_MODEL } from './ai.types.js';
 import { createChatModel, createEmbeddingModel } from './openai-compatible.js';
 
 const AI_CONFIG = Symbol('AI_CONFIG');
@@ -18,12 +18,13 @@ const AI_CONFIG = Symbol('AI_CONFIG');
       inject: [AI_CONFIG],
       useFactory: (config: AiConfig) => createChatModel(config.chat),
     },
+    { provide: CHAT_MODEL_CHOICES, inject: [AI_CONFIG], useFactory: (config: AiConfig) => config.chatModels },
     {
       provide: EMBEDDING_MODEL,
       inject: [AI_CONFIG],
       useFactory: (config: AiConfig) => createEmbeddingModel(config.embeddings),
     },
   ],
-  exports: [CHAT_MODEL, EMBEDDING_MODEL],
+  exports: [CHAT_MODEL, CHAT_MODEL_CHOICES, EMBEDDING_MODEL],
 })
 export class AiModule {}

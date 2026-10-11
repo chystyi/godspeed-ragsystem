@@ -43,9 +43,13 @@ body {
   background: var(--color-yellow-wash);
 }
 
-:focus-visible {
-  outline: 2px solid var(--color-ink);
-  outline-offset: 2px;
+/* In the base layer so that utilities such as focus-visible:outline-none can override it
+   (unlayered rules always win over layered ones, whatever their specificity). */
+@layer base {
+  :focus-visible {
+    outline: 2px solid var(--color-ink);
+    outline-offset: 2px;
+  }
 }
 
 /* Quiet entrance: only transform and opacity are animated. */

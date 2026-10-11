@@ -122,6 +122,12 @@ describe("streamAnswer", () => {
     { type: "delta", text: "!" },
   ];
 
+  it("sends the chosen model along with the question", async () => {
+    fetchMock.mockResolvedValue(sse(events));
+    for await (const _ of streamAnswer(ID, "Hello?", undefined, "b/model")) void _;
+    expect(fetchMock.mock.calls[0][1]!.body).toBe(JSON.stringify({ content: "Hello?", model: "b/model" }));
+  });
+
   it("posts the question and yields the events", async () => {
     fetchMock.mockResolvedValue(sse(events));
     const received: ChatStreamEvent[] = [];
@@ -175,5 +181,13 @@ describe("describeError", () => {
   it("copes with errors that did not come from the API", () => {
     expect(describeError(new Error("boom"))).toMatch(/something went wrong/i);
     expect(describeError(undefined)).toMatch(/something went wrong/i);
+  });
+});
+
+describe("listModels", () => {
+  it("reads the models the person may choose from", async () => {
+    fetchMock.mockResolvedValue(json(200, { default: "a/model", models: ["a/model", "b/model"] }));
+    expect(await api.listModels()).toEqual({ default: "a/model", models: ["a/model", "b/model"] });
+    expect(fetchMock.mock.calls[0][0]).toBe("http://api.test/api/models");
   });
 });

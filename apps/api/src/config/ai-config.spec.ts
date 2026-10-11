@@ -81,3 +81,17 @@ function catchError(fn: () => unknown): Error {
   }
   throw new Error('expected an error');
 }
+
+describe('selectable chat models', () => {
+  it('offers only the default model when no list is given', () => {
+    expect(loadAiConfig(base).chatModels).toEqual(['openai/gpt-4o-mini']);
+  });
+
+  it('adds the listed models after the default, without duplicates or blanks', () => {
+    const config = loadAiConfig({
+      ...base,
+      AI_CHAT_MODELS: ' anthropic/claude-sonnet , openai/gpt-4o-mini,,google/gemini-flash ',
+    });
+    expect(config.chatModels).toEqual(['openai/gpt-4o-mini', 'anthropic/claude-sonnet', 'google/gemini-flash']);
+  });
+});

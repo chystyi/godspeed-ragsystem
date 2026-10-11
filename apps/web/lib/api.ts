@@ -1,4 +1,5 @@
 import type {
+  ChatModelChoices,
   ApiError,
   ChatStreamEvent,
   Conversation,
@@ -85,6 +86,7 @@ export const api = {
     request<KbDocument>("POST", `/api/documents/${idSegment("document", id)}/reindex`),
 
   listConversations: () => request<Conversation[]>("GET", "/api/conversations"),
+  listModels: () => request<ChatModelChoices>("GET", "/api/models"),
   getConversation: async (id: string) =>
     request<ConversationWithMessages>("GET", `/api/conversations/${idSegment("conversation", id)}`),
   createConversation: (title?: string, signal?: AbortSignal) =>
@@ -102,10 +104,11 @@ export async function* streamAnswer(
   conversationId: string,
   content: string,
   signal?: AbortSignal,
+  model?: string,
 ): AsyncGenerator<ChatStreamEvent> {
   const response = await send(`/api/conversations/${idSegment("conversation", conversationId)}/messages/stream`, {
     method: "POST",
-    json: { content },
+    json: model ? { content, model } : { content },
     headers: { Accept: "text/event-stream" },
     signal,
   });

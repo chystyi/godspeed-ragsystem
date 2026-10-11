@@ -9,12 +9,14 @@ import type {
 import { Inject, Injectable, Logger } from '@nestjs/common';
 import {
   CHAT_MODEL,
+  CHAT_MODEL_CHOICES,
   type ChatModel,
   type ChatTurn,
   EMBEDDING_MODEL,
   type EmbeddingModel,
 } from '../ai/ai.types.js';
 import { AiProviderError } from '../ai/errors.js';
+import { ValidationFailedError } from '../http/validation.js';
 import { truncate } from '../text.js';
 import type { AuthUser } from '../auth/auth.types.js';
 import { CHAT_CONFIG, type ChatConfig } from './chat.config.js';
@@ -27,6 +29,7 @@ import {
 } from './chat.repository.js';
 import {
   buildAnswerMessages,
+  buildGeneralMessages,
   buildRewriteMessages,
   citedNumbers,
   type HistoryTurn,
@@ -48,6 +51,8 @@ interface AskContext {
   conversationId: string;
   passages: RetrievedChunk[];
   messages: ChatTurn[];
+  /** Whether the model is called at all (not when nothing is related and general answers are off). */
+  answerable: boolean;
   /** The first question of an untitled conversation becomes its title. */
   namesConversation: boolean;
 }
@@ -61,7 +66,19 @@ export class ChatService {
     @Inject(CHAT_MODEL) private readonly chat: ChatModel,
     @Inject(EMBEDDING_MODEL) private readonly embedder: EmbeddingModel,
     @Inject(CHAT_CONFIG) private readonly config: ChatConfig,
+    @Inject(CHAT_MODEL_CHOICES) private readonly models: string[],
   ) {}
+
+  /** The chat models a user may pick from; the first is what is used when none is chosen. */
+  availableModels(): { default: string; models: string[] } {
+    return { default: this.models[0], models: this.models };
+  }
+
+  private checkModel(model: string | undefined): void {
+    if (model !== undefined && !this.models.includes(model)) {
+      throw new ValidationFailedError([{ path: 'model', message: 'is not one of the available models' }]);
+    }
+  }
 
   createConversation(user: AuthUser, title: string | undefined): Promise<Conversation> {
     return this.repositories.forUser(user.token).createConversation(title);
@@ -88,11 +105,17 @@ export class ChatService {
    * the model answer from them only, and store question and answer together. If anything
    * fails before the answer exists, nothing is saved and the user can simply ask again.
    */
-  async ask(user: AuthUser, conversationId: string, question: string): Promise<SendMessageResult> {
+  async ask(
+    user: AuthUser,
+    conversationId: string,
+    question: string,
+    model?: string,
+  ): Promise<SendMessageResult> {
+    this.checkModel(model);
     const context = (await this.prepare(user, conversationId, question)) as AskContext; // no signal: never null
     let answer = NO_ANSWER_TEXT;
-    if (context.passages.length > 0) {
-      answer = (await this.chat.complete(context.messages, { temperature: ANSWER_TEMPERATURE })).content;
+    if (context.answerable) {
+      answer = (await this.chat.complete(context.messages, { temperature: ANSWER_TEMPERATURE, model })).content;
     }
     return this.save(context, question, answer);
   }
@@ -108,7 +131,9 @@ export class ChatService {
     conversationId: string,
     question: string,
     signal?: AbortSignal,
+    model?: string,
   ): AsyncGenerator<ChatStreamEvent> {
+    this.checkModel(model);
     let context: AskContext | null;
     try {
       context = await this.prepare(user, conversationId, question, signal);
@@ -120,13 +145,13 @@ export class ChatService {
     const sources = toSources(context.passages, '');
     let answer = '';
 
-    if (context.passages.length === 0) {
+    if (!context.answerable) {
       answer = NO_ANSWER_TEXT;
       yield { type: 'start', sources };
       yield { type: 'delta', text: answer };
     } else {
       const parts = this.chat
-        .stream(context.messages, { temperature: ANSWER_TEMPERATURE, signal })
+        .stream(context.messages, { temperature: ANSWER_TEMPERATURE, signal, model })
         [Symbol.asyncIterator]();
       try {
         // Wait for the first part before announcing anything: a provider that rejects the
@@ -175,20 +200,25 @@ export class ChatService {
       this.config.topK,
       this.config.minSimilarity,
     );
-    const messages = buildAnswerMessages({
-      question,
-      history: turns,
-      sources: passages.map((passage, i) => ({
-        number: i + 1,
-        title: passage.documentTitle,
-        content: passage.content,
-      })),
-    });
+    const messages =
+      passages.length === 0 && this.config.allowGeneralAnswers
+        ? buildGeneralMessages({ question, history: turns })
+        : buildAnswerMessages({
+            question,
+            history: turns,
+            allowGeneral: this.config.allowGeneralAnswers,
+            sources: passages.map((passage, i) => ({
+              number: i + 1,
+              title: passage.documentTitle,
+              content: passage.content,
+            })),
+          });
     return {
       repository,
       conversationId,
       passages,
       messages,
+      answerable: passages.length > 0 || this.config.allowGeneralAnswers,
       namesConversation:
         history.length === 0 && conversation.title === DEFAULT_CONVERSATION_TITLE,
     };

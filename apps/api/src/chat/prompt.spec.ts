@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   buildAnswerMessages,
+  buildGeneralMessages,
   buildRewriteMessages,
   citedNumbers,
   SYSTEM_PROMPT,
@@ -161,5 +162,23 @@ describe('titleFromQuestion', () => {
 
   it('collapses whitespace and newlines', () => {
     expect(titleFromQuestion('a\n\n  b\tc')).toBe('a b c');
+  });
+});
+
+describe('general conversation prompts', () => {
+  it('answers in the language of the user and never presents general knowledge as the documents', () => {
+    const messages = buildGeneralMessages({ question: 'Привет', history: [] });
+    expect(messages[0].content).toMatch(/language the user writes in/i);
+    expect(messages[0].content).toMatch(/do not claim/i);
+    expect(messages.at(-1)).toEqual({ role: 'user', content: 'Привет' });
+  });
+
+  it('lets the grounded prompt fall back to general knowledge only when allowed, and labelled', () => {
+    const strict = buildAnswerMessages({ question: 'q', history: [], sources: [] })[0].content;
+    const open = buildAnswerMessages({ question: 'q', history: [], sources: [], allowGeneral: true })[0].content;
+    expect(strict).toMatch(/do not use outside knowledge/i);
+    expect(open).not.toMatch(/do not use outside knowledge/i);
+    expect(open).toMatch(/not from the documents/i);
+    expect(open).toMatch(/never cite it/i);
   });
 });

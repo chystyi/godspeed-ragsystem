@@ -12,7 +12,7 @@ Two videos, each about 5 minutes. Speak plainly; show, do not read. Before recor
 
 **1:40 — Ask (90 s).** Chat → "How do I make my home Wi-Fi safer?" Let it stream. Click a citation `[1]`: the source panel shows the exact passage. "Every claim points back to a passage you wrote."
 
-**3:10 — Follow-up and honesty (60 s).** Ask "and what about the guest network?" — works as a follow-up. Then ask something not in the documents (e.g. "Who won the 2018 World Cup?"). Point out: "It says it cannot find this in your documents instead of making something up — and it did not even call the model."
+**3:10 — Follow-up and honesty (60 s).** Ask "and what about the guest network?" — works as a follow-up. Then ask something not in the documents (e.g. "Who won the 2018 World Cup?"). Point out: "It does not pretend this came from your documents: no sources are shown, and it answers as a normal assistant." Switch the model in the selector under the input and ask again; ask one question in Russian to show it follows your language.
 
 **4:10 — Housekeeping (30 s).** Show the conversation list, reload the page (history is kept), delete a conversation with the confirmation. Show it on a phone-width window.
 

@@ -20,6 +20,8 @@ export interface TokenUsage {
 }
 
 export interface ChatOptions {
+  /** Overrides the provider's default chat model for this request. */
+  model?: string;
   temperature?: number;
   maxTokens?: number;
   /** Cancels the request (e.g. when the user closed the page). */
@@ -63,3 +65,6 @@ export interface EmbeddingModel {
 /** Injection tokens (NestJS). */
 export const CHAT_MODEL = Symbol('CHAT_MODEL');
 export const EMBEDDING_MODEL = Symbol('EMBEDDING_MODEL');
+
+/** Chat models a user may pick from; the first one is the default. */
+export const CHAT_MODEL_CHOICES = Symbol('CHAT_MODEL_CHOICES');

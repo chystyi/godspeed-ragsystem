@@ -1,6 +1,6 @@
 # Knowledge Base
 
-Write down what you know, then ask questions about it. Answers come only from your own documents and cite their sources.
+Write down what you know, then ask questions about it. Answers are based on your own documents and cite their sources; anything else is answered as a normal conversation, in your language, with the model of your choice.
 
 - **Web:** Next.js 16 (Tailwind 4, SWR) — sign in, a document library, a streaming chat with source panel.
 - **API:** NestJS 12 — documents, indexing (chunking + embeddings), retrieval-augmented chat over server-sent events.
@@ -55,7 +55,7 @@ Browser ──(Supabase JS)──> Supabase Auth              session, JWT (ES25
 
 **Documents.** A document is saved first; indexing is tracked separately (`pending → indexed | failed`) and can be retried, so a provider outage never loses text. The text is split into ~1000-character chunks with 150 overlap, structure-aware (headings, paragraphs, sentences), each embedded with the document title in front. Unchanged content is recognized by a hash and not embedded again. A stale index (the document changed while it was being indexed) is rejected by the database.
 
-**Chat.** A question is (for follow-ups) rewritten into a standalone search query, embedded, and matched against the user's chunks by cosine similarity. Passages above a threshold (0.25, measured for the default embedding model) go into a numbered, escaped `<source>` prompt; the model must cite as `[n]`. If nothing is related, the answer is a fixed "not found in your documents" **without calling the model**. Answers stream as `start | delta | done | error` events; closing the connection cancels the provider call and nothing partial is stored.
+**Chat.** A question is (for follow-ups) rewritten into a standalone search query, embedded, and matched against the user's chunks by cosine similarity. Passages above a threshold (0.25, measured for the default embedding model) go into a numbered, escaped `<source>` prompt; the model must cite as `[n]`. If nothing is related, the model answers as a plain assistant (greetings, general questions; always in the user's language, never claiming the documents said it) — or, with `CHAT_ALLOW_GENERAL_ANSWERS=false`, the answer is a fixed "not found in your documents" **without calling the model**. The model can be picked in the chat from the list in `AI_CHAT_MODELS` (the server refuses anything not on the list). Answers stream as `start | delta | done | error` events; closing the connection cancels the provider call and nothing partial is stored.
 
 **Security model.** The API acts *as the user*: every query carries their JWT, and row level security is the real access control, so a bug in the API cannot read another user's rows. Writes that need more than one table go through `SECURITY DEFINER` functions that check `auth.uid()`; direct writes to chunks and messages are revoked. Per-user limits (200 documents, 200 conversations, 500 chunks per document, message sizes) live in the database; request rates and concurrent streams are limited in the API. Provider errors are mapped to fixed messages, so provider text and the API key never reach a user.
 
@@ -64,7 +64,7 @@ Browser ──(Supabase JS)──> Supabase Auth              session, JWT (ES25
 - **Monorepo (Turborepo, npm workspaces).** One repository, one `.env`, shared types in `packages/shared` so API and web cannot drift apart.
 - **NestJS for the API.** Modules, dependency injection and guards make the AI layer, repositories and limits replaceable and testable with fakes.
 - **pgvector in Supabase instead of a separate vector database.** Vectors sit next to the rows they belong to, so row level security covers retrieval too, and one free-tier service replaces three. HNSW with iterative scan keeps filtered searches complete.
-- **Retrieval before generation, with a threshold.** Cheaper and more honest than letting the model decide; unrelated questions cost no tokens.
+- **Retrieval before generation, with a threshold.** The model only sees passages that are actually related, and answers that use them cite them; without related passages it speaks as a plain assistant and says so.
 - **Provider-agnostic AI layer.** Two ports (`ChatModel`, `EmbeddingModel`) and one adapter for the OpenAI wire format.
 
 ### Swapping the AI provider
