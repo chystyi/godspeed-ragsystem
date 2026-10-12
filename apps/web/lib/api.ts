@@ -1,5 +1,6 @@
 import type {
   ChatModelChoices,
+  ExtractedText,
   ApiError,
   ChatStreamEvent,
   Conversation,
@@ -58,11 +59,11 @@ async function send(path: string, init: RequestInit & { json?: unknown }): Promi
 async function toError(response: Response): Promise<ApiRequestError> {
   const retryAfter = Number(response.headers.get("Retry-After"));
   try {
-    const body = (await response.json()) as Partial<ApiError>;
+    const body = (await response.json()) as Partial<ApiError> & { details?: { message?: string }[] };
     return new ApiRequestError(
       response.status,
       body.code ?? "http_error",
-      body.message ?? response.statusText,
+      body.details?.[0]?.message ?? body.message ?? response.statusText,
       Number.isFinite(retryAfter) && retryAfter > 0 ? retryAfter : undefined,
     );
   } catch {
@@ -84,6 +85,20 @@ export const api = {
   deleteDocument: async (id: string) => request<void>("DELETE", `/api/documents/${idSegment("document", id)}`),
   reindexDocument: async (id: string) =>
     request<KbDocument>("POST", `/api/documents/${idSegment("document", id)}/reindex`),
+
+  /** The text of a .txt or .pdf file, to be reviewed and saved as a document. Nothing is stored. */
+  extractText: async (file: File): Promise<ExtractedText> => {
+    const form = new FormData();
+    form.append("file", file);
+    try {
+      const response = await send("/api/documents/extract", { method: "POST", body: form });
+      return (await response.json()) as ExtractedText;
+    } catch (error) {
+      // The server's reasons for refusing a file are fixed sentences meant for the person.
+      if (error instanceof ApiRequestError && error.status === 422) throw new ApiRequestError(422, "upload_rejected", error.message);
+      throw error;
+    }
+  },
 
   listConversations: () => request<Conversation[]>("GET", "/api/conversations"),
   listModels: () => request<ChatModelChoices>("GET", "/api/models"),

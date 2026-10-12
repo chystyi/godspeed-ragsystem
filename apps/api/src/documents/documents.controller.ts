@@ -9,8 +9,11 @@ import {
   Param,
   Patch,
   Post,
+  UploadedFile,
   UseGuards,
+  UseInterceptors,
 } from '@nestjs/common';
+import { FileInterceptor } from '@nestjs/platform-express';
 import { AuthGuard } from '../auth/auth.guard.js';
 import type { AuthUser } from '../auth/auth.types.js';
 import { CurrentUser } from '../auth/current-user.decorator.js';
@@ -20,8 +23,12 @@ import {
   DOCUMENT_WRITE_LIMITER,
   type SlidingWindowLimiter,
 } from '../http/rate-limiter.js';
-import { UuidPipe, ZodPipe } from '../http/validation.js';
+import { UuidPipe, ValidationFailedError, ZodPipe } from '../http/validation.js';
 import { DocumentNotFoundError } from './errors.js';
+import { type ExtractedText, extractText } from './text-extraction.js';
+
+/** Largest upload read into memory. */
+const MAX_UPLOAD_BYTES = 5 * 1024 * 1024;
 import {
   type CreateDocumentDto,
   createDocumentSchema,
@@ -59,6 +66,18 @@ export class DocumentsController {
     @Body(new ZodPipe(createDocumentSchema)) body: CreateDocumentDto,
   ): Promise<KbDocument> {
     return this.guarded(user, () => this.documents.create(user, body));
+  }
+
+  /**
+   * Text of an uploaded .txt or .pdf file, for the person to review and save as a document.
+   * Nothing is stored and no embedding is made here; saving goes through the normal create route.
+   */
+  @Post('extract')
+  @HttpCode(200)
+  @UseInterceptors(FileInterceptor('file', { limits: { fileSize: MAX_UPLOAD_BYTES, files: 1, fields: 5, parts: 10 } }))
+  extract(@CurrentUser() user: AuthUser, @UploadedFile() file: { buffer: Buffer; originalname: string } | undefined): Promise<ExtractedText> {
+    if (!file) throw new ValidationFailedError([{ path: 'file', message: 'Choose a file to upload.' }]);
+    return this.guarded(user, () => extractText({ buffer: file.buffer, filename: file.originalname }));
   }
 
   @Get()

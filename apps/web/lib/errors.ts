@@ -30,8 +30,10 @@ export function describeError(error: unknown): string {
       return "The AI service could not answer this time. Try again.";
     case "limit_reached":
       return "You have reached the limit for this. Delete something you no longer need and try again.";
+    case "upload_rejected":
+      return error.message;
     case "payload_too_large":
-      return "This is too large to send.";
+      return "This is too large to send. Files can be up to 5 MB.";
     case "validation_error":
       return "Please check the entered values.";
     case "document_not_found":

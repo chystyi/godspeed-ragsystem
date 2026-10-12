@@ -2,7 +2,7 @@
 
 Write down what you know, then ask questions about it. Answers are based on your own documents and cite their sources; anything else is answered as a normal conversation, in your language, with the model of your choice.
 
-- **Web:** Next.js 16 (Tailwind 4, SWR) — sign in, a document library, a streaming chat with source panel.
+- **Web:** Next.js 16 (Tailwind 4, SWR) — sign in, a document library (write text or upload .txt/.pdf), a streaming chat with source panel and model choice.
 - **API:** NestJS 12 — documents, indexing (chunking + embeddings), retrieval-augmented chat over server-sent events.
 - **Data:** Supabase — Auth, Postgres with row level security and pgvector (HNSW).
 - **AI:** any OpenAI-compatible provider (OpenRouter by default), behind a small interface.
@@ -97,5 +97,5 @@ About 470 tests. API: unit tests for the chunker, prompt, rate limiters, token v
 - **Rate limits are in memory** — correct for one API instance. Several instances need Redis. There is no per-IP limit, and open sign-up allows unlimited accounts (enable captcha in Supabase).
 - **Session token lives in the browser**, so an XSS could read it. A strict CSP is set, but inline scripts remain allowed because pages are prerendered; cookie sessions with a server-side check would be the next step.
 - **Edits are lost when switching documents** with unsaved changes (the browser warns on closing the tab, not on navigation).
-- **Plain text only.** PDF/TXT upload, a token-usage view, hybrid (keyword + vector) search and reranking would improve answers; end-to-end browser tests should join the repository (they were run by hand).
+- **Files: .txt and .pdf only** (up to 5 MB, 100 pages). Text is extracted on the server, shown for review and saved through the normal path; scanned PDFs have no text layer (no OCR) and Word files are not supported. A token-usage view, hybrid (keyword + vector) search and reranking would improve answers; end-to-end browser tests should join the repository (they were run by hand).
 - **Chat quality** depends on the similarity threshold and chunk size; both are configurable and were tuned on a small set, not a benchmark.

@@ -2,6 +2,7 @@ import type { INestApplication } from '@nestjs/common';
 import { Test } from '@nestjs/testing';
 import request from 'supertest';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { makePdf } from '../../test/make-pdf.js';
 import { InMemoryDatabase } from '../../test/in-memory-documents.js';
 import { EMBEDDING_MODEL, type EmbeddingModel } from '../ai/ai.types.js';
 import { AiProviderError } from '../ai/errors.js';
@@ -396,5 +397,63 @@ describe('response headers', () => {
     expect(res.status).toBe(401);
     expect(res.headers['x-powered-by']).toBeUndefined();
     expect(res.headers['x-content-type-options']).toBe('nosniff');
+  });
+});
+
+describe('extracting text from an uploaded file', () => {
+  const upload = (user: string | null, content: Buffer | string, filename: string) => {
+    const req = server().post('/api/documents/extract');
+    if (user) req.set(as(user));
+    return req.attach('file', Buffer.from(content), filename);
+  };
+
+  it('returns title and text of a .txt file, and stores nothing', async () => {
+    const res = await upload('alice', 'Hello\nworld', 'My notes.txt');
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual({ title: 'My notes', content: 'Hello\nworld' });
+    expect(db.documents).toHaveLength(0);
+    expect(embedder.calls).toBe(0); // reading a file costs no embedding
+  });
+
+  it('reads a PDF', async () => {
+    const res = await upload('alice', makePdf([['Reset the router with the pin']]), 'guide.pdf');
+    expect(res.status).toBe(200);
+    expect(res.body.content).toContain('Reset the router with the pin');
+  });
+
+  it('requires a signed-in user, before reading anything', async () => {
+    const res = await upload(null, 'text', 'a.txt');
+    expect(res.status).toBe(401);
+  });
+
+  it.each([
+    ['an unsupported type', 'PK zip', 'a.docx'],
+    ['a binary file named .txt', Buffer.from([0, 1, 2, 3]).toString('latin1'), 'a.txt'],
+    ['an empty file', '', 'a.txt'],
+  ])('rejects %s with 422 and says why', async (_name, content, filename) => {
+    const res = await upload('alice', content, filename);
+    expect(res.status).toBe(422);
+    expect(res.body.code).toBe('validation_error');
+    expect(res.body.details).toEqual([expect.objectContaining({ path: 'file' })]);
+  });
+
+  it('rejects a request without a file', async () => {
+    const res = await server().post('/api/documents/extract').set(as('alice')).field('note', 'no file here');
+    expect(res.status).toBe(422);
+    expect(res.body.details).toEqual([expect.objectContaining({ path: 'file' })]);
+  });
+
+  it('refuses a file over the size limit with 413', async () => {
+    const res = await upload('alice', Buffer.alloc(5 * 1024 * 1024 + 1, 97), 'big.txt');
+    expect(res.status).toBe(413);
+    expect(res.body.code).toBe('payload_too_large');
+  });
+
+  it('counts against the write limit of the user', async () => {
+    await app.close();
+    app = await build(2);
+    expect((await upload('alice', 'a', 'a.txt')).status).toBe(200);
+    expect((await upload('alice', 'b', 'b.txt')).status).toBe(200);
+    expect((await upload('alice', 'c', 'c.txt')).status).toBe(429);
   });
 });

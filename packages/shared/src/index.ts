@@ -94,3 +94,9 @@ export interface ChatModelChoices {
   default: string;
   models: string[];
 }
+
+/** Text read from an uploaded .txt or .pdf file, to be reviewed and saved as a document. */
+export interface ExtractedText {
+  title: string;
+  content: string;
+}

@@ -191,3 +191,34 @@ describe("listModels", () => {
     expect(fetchMock.mock.calls[0][0]).toBe("http://api.test/api/models");
   });
 });
+
+describe("extractText", () => {
+  it("uploads the file as a form and returns title and text", async () => {
+    fetchMock.mockResolvedValue(json(200, { title: "Notes", content: "Hello" }));
+    const file = new File(["Hello"], "Notes.txt", { type: "text/plain" });
+    expect(await api.extractText(file)).toEqual({ title: "Notes", content: "Hello" });
+    const [url, init] = fetchMock.mock.calls[0];
+    expect(url).toBe("http://api.test/api/documents/extract");
+    expect(init!.method).toBe("POST");
+    expect(init!.body).toBeInstanceOf(FormData);
+    expect((init!.body as FormData).get("file")).toBeInstanceOf(File);
+    // the browser must set the multipart boundary itself
+    expect(new Headers(init!.headers).get("Content-Type")).toBeNull();
+    expect(new Headers(init!.headers).get("Authorization")).toBe("Bearer token-123");
+  });
+
+  it("turns the server's reason for refusing a file into an error to show", async () => {
+    fetchMock.mockResolvedValue(
+      json(422, { code: "validation_error", message: "request validation failed", details: [{ path: "file", message: "The PDF could not be read." }] }),
+    );
+    const error = await api.extractText(new File(["x"], "a.pdf")).catch((e: unknown) => e);
+    expect(error).toBeInstanceOf(ApiRequestError);
+    expect(describeError(error)).toBe("The PDF could not be read.");
+  });
+
+  it("explains a file that is too large", async () => {
+    fetchMock.mockResolvedValue(json(413, { code: "payload_too_large", message: "x" }));
+    const error = await api.extractText(new File(["x"], "a.txt")).catch((e: unknown) => e);
+    expect(describeError(error)).toMatch(/too large/i);
+  });
+});

@@ -1,7 +1,7 @@
 "use client";
 
-import type { KbDocument } from "@kb/shared";
-import { ArrowClockwise, ArrowLeft, Check, Trash } from "@phosphor-icons/react";
+import type { ExtractedText, KbDocument } from "@kb/shared";
+import { ArrowClockwise, ArrowLeft, Check, Trash, UploadSimple } from "@phosphor-icons/react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useEffect, useRef, useState } from "react";
@@ -18,6 +18,7 @@ import { type DocumentFormValues, type FormErrors, isDirty, LIMITS, parseTags, v
 import { ApiRequestError, describeError } from "@/lib/errors";
 import { formatWhen } from "@/lib/format";
 import { useDocument } from "@/lib/hooks";
+import { checkUpload } from "@/lib/upload";
 
 const EMPTY: DocumentFormValues = { title: "", tags: "", content: "" };
 
@@ -38,6 +39,7 @@ export function NewDocumentEditor() {
       key={formKey}
       saved={null}
       initial={EMPTY}
+      onExtract={(file) => api.extractText(file)}
       onSave={async (values) => {
         const created = await api.createDocument({
           title: values.title.trim(),
@@ -116,9 +118,11 @@ interface DocumentFormProps {
   onSave: (values: DocumentFormValues) => Promise<KbDocument>;
   onReindex?: () => Promise<KbDocument>;
   onDelete?: () => Promise<void>;
+  /** Reads the text of a .txt or .pdf file (new documents only). */
+  onExtract?: (file: File) => Promise<ExtractedText>;
 }
 
-function DocumentForm({ saved: initialSaved, initial, onSave, onReindex, onDelete }: DocumentFormProps) {
+function DocumentForm({ saved: initialSaved, initial, onSave, onReindex, onDelete, onExtract }: DocumentFormProps) {
   const [values, setValues] = useState(initial);
   const [saved, setSaved] = useState(initialSaved);
   const [errors, setErrors] = useState<FormErrors>({});
@@ -128,6 +132,7 @@ function DocumentForm({ saved: initialSaved, initial, onSave, onReindex, onDelet
   const [deleting, setDeleting] = useState(false);
   const [confirming, setConfirming] = useState(false);
   const [justSaved, setJustSaved] = useState(false);
+  const [extracting, setExtracting] = useState(false);
   const formRef = useRef<HTMLFormElement>(null);
 
   const dirty = saved ? isDirty(values, saved) : values.title !== "" || values.content !== "" || values.tags !== "";
@@ -194,6 +199,33 @@ function DocumentForm({ saved: initialSaved, initial, onSave, onReindex, onDelet
       setFailure(describeError(error));
     } finally {
       setSaving(false);
+    }
+  }
+
+  async function readFile(event: React.ChangeEvent<HTMLInputElement>) {
+    const file = event.target.files?.[0];
+    event.target.value = ""; // choosing the same file again must work
+    if (!file || !onExtract || extracting) return;
+    const problem = checkUpload(file);
+    if (problem) {
+      setFailure(problem);
+      return;
+    }
+    setExtracting(true);
+    setFailure(null);
+    try {
+      const read = await onExtract(file);
+      // Nothing the person already wrote is thrown away: a typed title stays, text is added after.
+      setValues((current) => ({
+        ...current,
+        title: current.title.trim() ? current.title : read.title.slice(0, LIMITS.title),
+        content: current.content.trim() ? `${current.content.trimEnd()}\n\n${read.content}` : read.content,
+      }));
+      setErrors({});
+    } catch (error) {
+      setFailure(describeError(error));
+    } finally {
+      setExtracting(false);
     }
   }
 
@@ -275,6 +307,16 @@ function DocumentForm({ saved: initialSaved, initial, onSave, onReindex, onDelet
       )}
       {failure && <Alert>{failure}</Alert>}
 
+      {onExtract && (
+        <div className="flex flex-wrap items-center gap-3 rounded-md border border-dashed border-line px-4 py-3 text-sm text-muted">
+          <UploadSimple size={18} weight="bold" aria-hidden />
+          <label className="cursor-pointer font-medium text-ink underline underline-offset-4 has-[:focus-visible]:outline-2 has-[:focus-visible]:outline-offset-2">
+            {extracting ? "Reading the file…" : "Upload a .txt or .pdf file"}
+            <input type="file" accept=".txt,.pdf,text/plain,application/pdf" className="sr-only" onChange={readFile} disabled={extracting} aria-label="Upload a .txt or .pdf file" />
+          </label>
+          <span>The text is filled in below for you to review (up to 5 MB).</span>
+        </div>
+      )}
       <TextField
         label="Title"
         value={values.title}
