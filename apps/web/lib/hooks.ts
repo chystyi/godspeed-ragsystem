@@ -30,3 +30,5 @@ export const useConversation = (id: string | null) =>
   useSWR(id ? ["conversation", id] : null, () => api.getConversation(id as string), options);
 
 export const useModels = () => useSWR("models", api.listModels, { ...options, revalidateOnFocus: false });
+
+export const useUsage = (days: number) => useSWR(["usage", days], () => api.getUsage(days), { ...options, revalidateOnFocus: false });

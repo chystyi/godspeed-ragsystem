@@ -68,6 +68,13 @@ describe("AppShell", () => {
     expect(screen.getByRole("link", { name: /Documents/ })).not.toHaveAttribute("aria-current");
   });
 
+  it("links to the usage page and marks it when it is open", () => {
+    mocks.pathname = "/usage";
+    render(<AppShell>content</AppShell>);
+    expect(screen.getByRole("link", { name: /Usage/ })).toHaveAttribute("href", "/usage");
+    expect(screen.getByRole("link", { name: /Usage/ })).toHaveAttribute("aria-current", "page");
+  });
+
   it("signs out and returns to the sign-in page", async () => {
     render(<AppShell>content</AppShell>);
     await userEvent.click(screen.getByRole("button", { name: "Sign out" }));

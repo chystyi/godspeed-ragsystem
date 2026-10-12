@@ -1,6 +1,7 @@
 import { Logger } from '@nestjs/common';
 import { beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { InMemoryChatDatabase } from '../../test/in-memory-chat.js';
+import { FakeUsageRecorder } from '../../test/in-memory-usage.js';
 import type { ChatCompletion, ChatModel, ChatOptions, ChatTurn, EmbeddingModel } from '../ai/ai.types.js';
 import { AiProviderError } from '../ai/errors.js';
 import type { AuthUser } from '../auth/auth.types.js';
@@ -19,7 +20,7 @@ class FakeChat implements ChatModel {
     this.options.push(options);
     const next = this.replies.shift() ?? 'default answer';
     if (next instanceof Error) throw next;
-    return { content: next, model: 'fake/chat' };
+    return { content: next, model: 'fake/chat', usage: { promptTokens: 10, completionTokens: 5, totalTokens: 15 } };
   }
 
   streamCalls: ChatTurn[][] = [];
@@ -37,6 +38,7 @@ class FakeChat implements ChatModel {
       this.onPart?.(i);
       yield part;
     }
+    options?.onUsage?.({ promptTokens: 20, completionTokens: 8, totalTokens: 28 });
   }
 }
 
@@ -53,7 +55,7 @@ class FakeEmbedder implements EmbeddingModel {
     this.signals.push(options?.signal);
     this.during?.();
     if (this.failWith) throw this.failWith;
-    return { vectors: texts.map(() => [0.1, 0.2, 0.3]), usage: { totalTokens: 1 } };
+    return { vectors: texts.map(() => [0.1, 0.2, 0.3]), usage: { totalTokens: 7 } };
   }
 }
 
@@ -85,8 +87,9 @@ const chunk = (n: number, similarity: number, over: Partial<RetrievedChunk> = {}
 let db: InMemoryChatDatabase;
 let chat: FakeChat;
 let embedder: FakeEmbedder;
+let usage: FakeUsageRecorder;
 const service = (over: Partial<ChatConfig> = {}) =>
-  new ChatService(db.factory(), chat, embedder, config(over), MODELS);
+  new ChatService(db.factory(), chat, embedder, config(over), MODELS, usage);
 
 beforeAll(() => {
   Logger.overrideLogger(false);
@@ -95,6 +98,7 @@ beforeEach(() => {
   db = new InMemoryChatDatabase();
   chat = new FakeChat();
   embedder = new FakeEmbedder();
+  usage = new FakeUsageRecorder();
 });
 
 async function collect(svc: ChatService, question: string, id: string, signal?: AbortSignal, model?: string) {
@@ -595,5 +599,49 @@ describe('choosing the chat model', () => {
 
   it('lists the available models, default first', () => {
     expect(service().availableModels()).toEqual({ default: 'fake/chat', models: ['fake/chat', 'fake/other'] });
+  });
+});
+
+describe('token usage', () => {
+  it('counts the answer, the search embedding and the query rewrite', async () => {
+    db.corpus = [chunk(1, 0.8)];
+    const svc = service();
+    const conversation = await start(svc);
+    await svc.ask(alice, conversation.id, 'first question');
+    expect(usage.events.map((e) => e.event)).toEqual([
+      { kind: 'embedding', model: 'fake/embed', promptTokens: 7, completionTokens: 0 },
+      { kind: 'chat', model: 'fake/chat', promptTokens: 10, completionTokens: 5 },
+    ]);
+    usage.events.length = 0;
+    await svc.ask(alice, conversation.id, 'and a follow-up'); // rewritten first, then searched, then answered
+    expect(usage.of('chat')).toHaveLength(2);
+    expect(usage.of('embedding')).toHaveLength(1);
+    expect(usage.events.every((e) => e.user === 'alice')).toBe(true);
+  });
+
+  it('counts a streamed answer with the tokens the provider reported, under the chosen model', async () => {
+    db.corpus = [chunk(1, 0.8)];
+    const svc = service({ rewriteQueries: false });
+    const conversation = await start(svc);
+    await collect(svc, 'What?', conversation.id, undefined, 'fake/other');
+    expect(usage.of('chat')).toEqual([{ kind: 'chat', model: 'fake/other', promptTokens: 20, completionTokens: 8 }]);
+  });
+
+  it('counts only the search when nothing is related and the model is not called', async () => {
+    db.corpus = [];
+    const svc = service();
+    const conversation = await start(svc);
+    await svc.ask(alice, conversation.id, 'Capital of France?');
+    expect(usage.of('chat')).toEqual([]);
+    expect(usage.of('embedding')).toHaveLength(1);
+  });
+
+  it('does not let a failing recorder break the answer', async () => {
+    db.corpus = [chunk(1, 0.8)];
+    usage.failWith = new Error('usage store is down');
+    const svc = service();
+    const conversation = await start(svc);
+    const { assistantMessage } = await svc.ask(alice, conversation.id, 'What?');
+    expect(assistantMessage.content).toBe('default answer');
   });
 });

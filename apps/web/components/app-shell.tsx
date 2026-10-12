@@ -1,6 +1,6 @@
 "use client";
 
-import { ChatCircleText, FileText, SignOut } from "@phosphor-icons/react";
+import { ChartBar, ChatCircleText, FileText, SignOut } from "@phosphor-icons/react";
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
 import { Suspense, useEffect } from "react";
@@ -12,6 +12,7 @@ import { Skeleton } from "@/components/ui/skeleton";
 const NAV = [
   { href: "/documents", label: "Documents", Icon: FileText },
   { href: "/chat", label: "Chat", Icon: ChatCircleText },
+  { href: "/usage", label: "Usage", Icon: ChartBar },
 ] as const;
 
 

@@ -100,3 +100,20 @@ export interface ExtractedText {
   title: string;
   content: string;
 }
+
+export type UsageKind = "chat" | "embedding";
+
+/** Tokens used on one day, for one kind of call and one model. */
+export interface UsageRow {
+  day: string;
+  kind: UsageKind;
+  model: string;
+  requests: number;
+  promptTokens: number;
+  completionTokens: number;
+}
+
+export interface UsageSummary {
+  days: number;
+  rows: UsageRow[];
+}

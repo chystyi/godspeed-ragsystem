@@ -110,7 +110,11 @@ export function createChatModel(config: ChatConfig): ChatModel {
       let response: AsyncIterable<OpenAI.Chat.Completions.ChatCompletionChunk>;
       try {
         response = await sdk.chat.completions.create(
-          { ...requestBody(options.model ?? config.model, messages, options), stream: true },
+          {
+            ...requestBody(options.model ?? config.model, messages, options),
+            stream: true,
+            stream_options: { include_usage: true },
+          },
           { signal: options.signal },
         );
       } catch (error) {
@@ -122,6 +126,17 @@ export function createChatModel(config: ChatConfig): ChatModel {
       let leading = '';
       try {
         for await (const chunk of response) {
+          if (chunk.usage && options.onUsage) {
+            try {
+              options.onUsage({
+                promptTokens: chunk.usage.prompt_tokens,
+                completionTokens: chunk.usage.completion_tokens,
+                totalTokens: chunk.usage.total_tokens,
+              });
+            } catch {
+              // bookkeeping must not break the answer
+            }
+          }
           const text = chunk.choices[0]?.delta?.content;
           if (!text) continue;
           if (produced) {

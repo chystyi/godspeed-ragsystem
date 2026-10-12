@@ -221,3 +221,33 @@ describe('IndexingService', () => {
     expect(embedder.calls[0].every((t) => t.startsWith('Guide\n\n'))).toBe(true);
   });
 });
+
+describe('embedding usage', () => {
+  it('reports the model and the tokens once the text was embedded', async () => {
+    const doc = await newDoc();
+    const seen: object[] = [];
+    await indexing.index(repo(), doc, { onUsage: (u) => seen.push(u) });
+    expect(seen).toEqual([{ model: 'fake/embed-v1', tokens: embedder.calls[0].length }]);
+  });
+
+  it('reports nothing when nothing was embedded (unchanged text, or a provider failure)', async () => {
+    const doc = await newDoc();
+    await indexing.index(repo(), doc);
+    const indexed = (await repo().findById(doc.id))!;
+    const seen: object[] = [];
+    await indexing.index(repo(), indexed, { onUsage: (u) => seen.push(u) }); // unchanged: skipped
+    embedder.failWith = new AiProviderError('unavailable', 'down', 503);
+    await indexing.index(repo(), indexed, { force: true, onUsage: (u) => seen.push(u) });
+    expect(seen).toEqual([]);
+  });
+
+  it('is not disturbed by a failing callback', async () => {
+    const doc = await newDoc();
+    const outcome = await indexing.index(repo(), doc, {
+      onUsage: () => {
+        throw new Error('callback bug');
+      },
+    });
+    expect(outcome).toBe('indexed');
+  });
+});

@@ -10,12 +10,14 @@ import { Inject, Injectable, Logger } from '@nestjs/common';
 import {
   CHAT_MODEL,
   CHAT_MODEL_CHOICES,
+  type ChatCompletion,
   type ChatModel,
   type ChatTurn,
   EMBEDDING_MODEL,
   type EmbeddingModel,
 } from '../ai/ai.types.js';
 import { AiProviderError } from '../ai/errors.js';
+import { USAGE_RECORDER, type UsageEvent, type UsageRecorder } from '../usage/usage.types.js';
 import { ValidationFailedError } from '../http/validation.js';
 import { truncate } from '../text.js';
 import type { AuthUser } from '../auth/auth.types.js';
@@ -67,7 +69,15 @@ export class ChatService {
     @Inject(EMBEDDING_MODEL) private readonly embedder: EmbeddingModel,
     @Inject(CHAT_CONFIG) private readonly config: ChatConfig,
     @Inject(CHAT_MODEL_CHOICES) private readonly models: string[],
+    @Inject(USAGE_RECORDER) private readonly usage: UsageRecorder,
   ) {}
+
+  /** Counts a provider call without making the user wait for, or depend on, the bookkeeping. */
+  private track(user: AuthUser, event: UsageEvent): void {
+    void this.usage.record(user, event).catch((error: unknown) => {
+      this.logger.warn(`usage not recorded: ${String(error)}`);
+    });
+  }
 
   /** The chat models a user may pick from; the first is what is used when none is chosen. */
   availableModels(): { default: string; models: string[] } {
@@ -117,14 +127,14 @@ export class ChatService {
     if (!context) throw new DOMException('the client left', 'AbortError'); // nobody is waiting for the answer
     let answer = NO_ANSWER_TEXT;
     if (context.answerable) {
-      answer = (
-        await this.chat.complete(context.messages, {
-          temperature: ANSWER_TEMPERATURE,
-          maxTokens: this.config.maxAnswerTokens,
-          model,
-          signal,
-        })
-      ).content;
+      const completion = await this.chat.complete(context.messages, {
+        temperature: ANSWER_TEMPERATURE,
+        maxTokens: this.config.maxAnswerTokens,
+        model,
+        signal,
+      });
+      answer = completion.content;
+      this.trackCompletion(user, completion, model);
     }
     return this.save(context, question, answer);
   }
@@ -165,6 +175,13 @@ export class ChatService {
           maxTokens: this.config.maxAnswerTokens,
           signal,
           model,
+          onUsage: (used) =>
+            this.track(user, {
+              kind: 'chat',
+              model: model ?? this.models[0],
+              promptTokens: used.promptTokens,
+              completionTokens: used.completionTokens,
+            }),
         })
         [Symbol.asyncIterator]();
       try {
@@ -207,9 +224,10 @@ export class ChatService {
     const turns: HistoryTurn[] = history.map(({ role, content }) => ({ role, content }));
 
     if (signal?.aborted) return null;
-    const searchQuery = await this.standaloneQuery(turns, question, signal);
+    const searchQuery = await this.standaloneQuery(user, turns, question, signal);
     if (signal?.aborted) return null;
-    const { vectors } = await this.embedder.embed([searchQuery], { signal });
+    const { vectors, usage: embedded } = await this.embedder.embed([searchQuery], { signal });
+    this.track(user, { kind: 'embedding', model: this.embedder.model, promptTokens: embedded.totalTokens, completionTokens: 0 });
     if (signal?.aborted) return null;
     const passages = await repository.searchChunks(
       vectors[0],
@@ -240,6 +258,16 @@ export class ChatService {
     };
   }
 
+  private trackCompletion(user: AuthUser, completion: ChatCompletion, requested?: string): void {
+    if (!completion.usage) return;
+    this.track(user, {
+      kind: 'chat',
+      model: completion.model || requested || this.models[0],
+      promptTokens: completion.usage.promptTokens,
+      completionTokens: completion.usage.completionTokens,
+    });
+  }
+
   private save(context: AskContext, question: string, answer: string): Promise<SendMessageResult> {
     return context.repository.appendExchange({
       conversationId: context.conversationId,
@@ -257,14 +285,21 @@ export class ChatService {
   }
 
   /** The text to search with: a follow-up is first turned into a self-contained question. */
-  private async standaloneQuery(history: HistoryTurn[], question: string, signal?: AbortSignal): Promise<string> {
+  private async standaloneQuery(
+    user: AuthUser,
+    history: HistoryTurn[],
+    question: string,
+    signal?: AbortSignal,
+  ): Promise<string> {
     if (!this.config.rewriteQueries || history.length === 0) return question;
     try {
-      const rewritten = (await this.chat.complete(buildRewriteMessages(history, question), {
+      const completion = await this.chat.complete(buildRewriteMessages(history, question), {
         temperature: 0,
         maxTokens: 100,
         signal,
-      })).content.trim();
+      });
+      this.trackCompletion(user, completion);
+      const rewritten = completion.content.trim();
       return rewritten ? truncate(rewritten, MAX_REWRITTEN_QUERY_CHARS) : question;
     } catch (error) {
       // The rewrite only improves search; the original question still works.

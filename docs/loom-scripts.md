@@ -9,20 +9,21 @@ documents ready to paste (a home-network guide, a recipe, a project note). Speak
 
 ## Video 1 — What I built (max 5 min)
 
-**0:00 — What it is (15 s).** "A personal knowledge base: you write documents, then ask questions about them. Answers use your own text and show where each claim came from."
+**0:00 — What it is (15 s).** "A personal knowledge base: you write or upload documents, then ask questions about them. Answers use your own text and show where each claim came from."
 
-**0:15 — Sign in and add knowledge (60 s).** Sign in (each user sees only their own data). New document → paste the home-network guide, tags, save with Cmd+S. Point at the status badge: "The text is split into passages and embedded so it can be found by meaning." Add a second document on another topic. Save an empty title to show validation.
+**0:15 — Sign in and add knowledge (70 s).** Sign in (each user sees only their own data). New document → paste the home-network guide, tags, save with Cmd+S; point at the status badge ("the text is split into passages and embedded so it can be found by meaning"). Then **upload a PDF** (the orchid guide): the text is extracted and filled in for review, save. Save an empty title to show validation.
 
-**1:15 — Ask, with sources (75 s).** Chat → "How do I make my home Wi-Fi safer?" The answer streams in. Click citation `[1]`: the exact passage opens. Ask a follow-up ("and the guest network?") — it understands the context.
+**1:25 — Ask, with sources (70 s).** Chat → "How do I make my home Wi-Fi safer?" The answer streams in. Click citation `[1]`: the exact passage opens. Ask a follow-up ("and the guest network?") — it understands the context.
 
-**2:30 — Beyond the documents (45 s).** Say "Hello", then ask something general, then one in Russian. "When nothing in your documents applies it answers as a normal assistant, in your language, and does not pretend it came from your documents — no sources are shown." Switch the model in the selector and ask again.
+**2:35 — Beyond the documents (40 s).** Say "Hello", then ask something general, then one in Russian. "When nothing in your documents applies it answers as a normal assistant, in your language, and does not pretend it came from your documents — no sources." Switch the model in the selector and ask again.
 
-**3:15 — Under the hood (80 s).** Show the repo tree for 10 s (Turborepo: `apps/web`, `apps/api`, `packages/shared`, `supabase/migrations`). Three points, each ~20 s:
+**3:15 — Usage (20 s).** Open *Usage*: tokens for answers and embeddings, per day and per model. "Counted as the provider reports them."
+
+**3:35 — Under the hood (70 s).** Repo tree for 10 s (Turborepo: `apps/web`, `apps/api`, `packages/shared`, `supabase/migrations`). Two points, ~25 s each:
 1. The API acts as the user, so row level security is the real access control; writes go through functions that check `auth.uid()`; limits live in the database.
-2. The AI layer is two small ports (`ChatModel`, `EmbeddingModel`) and one OpenAI-compatible adapter: show `.env` — change `AI_BASE_URL` / model and it is another provider (OpenRouter, Groq, Ollama).
-3. Chunking 1000/150 with structure awareness; threshold on similarity; numbered, escaped sources in the prompt.
+2. The AI layer is two small ports and one OpenAI-compatible adapter: show `.env`, change `AI_BASE_URL` / model and it is another provider (OpenRouter, Groq, Ollama).
 
-**4:35 — Close (25 s).** "Tests: about 520, including live suites against the real database. Not done: file upload and a token-usage view; the README lists what I would do next."
+**4:45 — Close (15 s).** "About 600 tests, including live suites against the real database. The README lists what I would do next."
 
 ## Video 2 — How I used AI to move faster (max 5 min)
 

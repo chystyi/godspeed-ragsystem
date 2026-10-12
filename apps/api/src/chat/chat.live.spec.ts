@@ -163,6 +163,24 @@ describe.skipIf(!process.env.RUN_LIVE_E2E)('chat end to end (live)', () => {
     expect(res.body.assistantMessage.sources).toEqual([]);
   }, 60000);
 
+  it('shows the tokens used by the documents and answers so far, for this user only', async () => {
+    // Recording is not awaited by the request; give it a moment.
+    let rows: { kind: string; model: string; promptTokens: number; completionTokens: number }[] = [];
+    for (let attempt = 0; attempt < 10; attempt++) {
+      rows = (await http().get('/api/usage').set(auth(alice))).body.rows;
+      if (rows.some((r) => r.kind === 'chat')) break;
+      await new Promise((resolve) => setTimeout(resolve, 500));
+    }
+    expect(rows.some((r) => r.kind === 'embedding' && r.promptTokens > 0)).toBe(true);
+    expect(rows.some((r) => r.kind === 'chat' && r.promptTokens > 0 && r.completionTokens > 0)).toBe(true);
+    // Each user gets exactly their own rows, nobody else's (the database holds both).
+    for (const user of [alice, bob]) {
+      const api = (await http().get('/api/usage').set(auth(user))).body.rows as { requests: number }[];
+      const stored = (await users.admin.from('usage_daily').select('requests').eq('user_id', user.id)).data ?? [];
+      expect(api.reduce((n, r) => n + r.requests, 0)).toBe(stored.reduce((n, r) => n + r.requests, 0));
+    }
+  }, 60000);
+
   it('answers a greeting and a general question when nothing in the documents applies (general mode)', async () => {
     const general = await startApp(true);
     try {

@@ -26,6 +26,11 @@ export interface ChatOptions {
   maxTokens?: number;
   /** Cancels the request (e.g. when the user closed the page). */
   signal?: AbortSignal;
+  /**
+   * Streams only: called once, after the text, with the tokens the provider reports (if it does).
+   * A failure inside the callback never affects the answer.
+   */
+  onUsage?: (usage: TokenUsage) => void;
 }
 
 export interface ChatCompletion {

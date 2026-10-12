@@ -3,6 +3,8 @@ import { Test } from '@nestjs/testing';
 import request from 'supertest';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { makePdf } from '../../test/make-pdf.js';
+import { FakeUsageRecorder } from '../../test/in-memory-usage.js';
+import { USAGE_RECORDER } from '../usage/usage.types.js';
 import { InMemoryDatabase } from '../../test/in-memory-documents.js';
 import { EMBEDDING_MODEL, type EmbeddingModel } from '../ai/ai.types.js';
 import { AiProviderError } from '../ai/errors.js';
@@ -43,6 +45,7 @@ const verifier: TokenVerifier = {
 let app: INestApplication;
 let db: InMemoryDatabase;
 let embedder: FakeEmbedder;
+let usage: FakeUsageRecorder;
 
 async function build(writesPerMinute = 1000, maxConcurrent = 3): Promise<INestApplication> {
   const moduleRef = await Test.createTestingModule({
@@ -50,6 +53,7 @@ async function build(writesPerMinute = 1000, maxConcurrent = 3): Promise<INestAp
     providers: [
       DocumentsService,
       IndexingService,
+      { provide: USAGE_RECORDER, useValue: usage },
       { provide: DOCUMENTS_REPOSITORY_FACTORY, useValue: db.factory() },
       { provide: EMBEDDING_MODEL, useValue: embedder },
       { provide: TOKEN_VERIFIER, useValue: verifier },
@@ -66,6 +70,7 @@ async function build(writesPerMinute = 1000, maxConcurrent = 3): Promise<INestAp
 beforeEach(async () => {
   db = new InMemoryDatabase();
   embedder = new FakeEmbedder();
+  usage = new FakeUsageRecorder();
   app = await build();
 });
 
@@ -285,6 +290,7 @@ describe('error format', () => {
       providers: [
         DocumentsService,
         IndexingService,
+        { provide: USAGE_RECORDER, useValue: usage },
         { provide: DOCUMENTS_REPOSITORY_FACTORY, useValue: broken },
         { provide: EMBEDDING_MODEL, useValue: embedder },
         { provide: TOKEN_VERIFIER, useValue: verifier },
@@ -455,5 +461,23 @@ describe('extracting text from an uploaded file', () => {
     expect((await upload('alice', 'a', 'a.txt')).status).toBe(200);
     expect((await upload('alice', 'b', 'b.txt')).status).toBe(200);
     expect((await upload('alice', 'c', 'c.txt')).status).toBe(429);
+  });
+});
+
+describe('token usage of documents', () => {
+  it('counts the embedding of a created document, and not an update that changes nothing to embed', async () => {
+    const { body } = await create('alice', { title: 'Guide', content: 'Some text.' });
+    expect(usage.events).toEqual([
+      { user: 'alice', event: { kind: 'embedding', model: 'fake/embed', promptTokens: 1, completionTokens: 0 } },
+    ]);
+    await server().patch(`/api/documents/${body.id}`).set(as('alice')).send({ tags: ['only-tags'] });
+    expect(usage.events).toHaveLength(1);
+  });
+
+  it('still saves and indexes when counting fails', async () => {
+    usage.failWith = new Error('usage store is down');
+    const res = await create('alice');
+    expect(res.status).toBe(201);
+    expect(res.body.indexingStatus).toBe('indexed');
   });
 });

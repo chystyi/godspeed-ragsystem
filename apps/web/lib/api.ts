@@ -1,6 +1,7 @@
 import type {
   ChatModelChoices,
   ExtractedText,
+  UsageSummary,
   ApiError,
   ChatStreamEvent,
   Conversation,
@@ -101,6 +102,7 @@ export const api = {
   },
 
   listConversations: () => request<Conversation[]>("GET", "/api/conversations"),
+  getUsage: (days: number) => request<UsageSummary>("GET", `/api/usage?days=${encodeURIComponent(String(days))}`),
   listModels: () => request<ChatModelChoices>("GET", "/api/models"),
   getConversation: async (id: string) =>
     request<ConversationWithMessages>("GET", `/api/conversations/${idSegment("conversation", id)}`),

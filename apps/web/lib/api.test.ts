@@ -222,3 +222,11 @@ describe("extractText", () => {
     expect(describeError(error)).toMatch(/too large/i);
   });
 });
+
+describe("getUsage", () => {
+  it("reads the usage of the chosen period", async () => {
+    fetchMock.mockResolvedValue(json(200, { days: 7, rows: [] }));
+    expect(await api.getUsage(7)).toEqual({ days: 7, rows: [] });
+    expect(fetchMock.mock.calls[0][0]).toBe("http://api.test/api/usage?days=7");
+  });
+});

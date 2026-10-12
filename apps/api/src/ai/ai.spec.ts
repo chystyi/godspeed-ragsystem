@@ -293,6 +293,45 @@ describe('embedding model', () => {
 });
 
 
+describe('chat streaming usage', () => {
+  const question = [{ role: 'user' as const, content: 'x' }];
+  const withUsage = (parts: string[], usage: object | null) => {
+    const reply = streamReply(parts);
+    if (usage) (reply.sse as object[]).push({ id: 'c', object: 'chat.completion.chunk', created: 0, model: 'fake-chat', choices: [], usage });
+    return reply;
+  };
+
+  it('asks the provider to report usage and passes it on after the text', async () => {
+    server.setHandler(() => withUsage(['Hello'], { prompt_tokens: 12, completion_tokens: 3, total_tokens: 15 }));
+    const seen: object[] = [];
+    const parts: string[] = [];
+    for await (const part of createChatModel(chatConfig()).stream(question, { onUsage: (u) => seen.push(u) })) parts.push(part);
+    expect(parts).toEqual(['Hello']);
+    expect(server.requests[0].body).toMatchObject({ stream: true, stream_options: { include_usage: true } });
+    expect(seen).toEqual([{ promptTokens: 12, completionTokens: 3, totalTokens: 15 }]);
+  });
+
+  it('works when the provider sends no usage', async () => {
+    server.setHandler(() => withUsage(['Hello'], null));
+    const seen: object[] = [];
+    for await (const _ of createChatModel(chatConfig()).stream(question, { onUsage: (u) => seen.push(u) })) void _;
+    expect(seen).toEqual([]);
+  });
+
+  it('does not let a failing callback break the answer', async () => {
+    server.setHandler(() => withUsage(['Hello'], { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 }));
+    const parts: string[] = [];
+    for await (const part of createChatModel(chatConfig()).stream(question, {
+      onUsage: () => {
+        throw new Error('callback bug');
+      },
+    })) {
+      parts.push(part);
+    }
+    expect(parts).toEqual(['Hello']);
+  });
+});
+
 describe('chat streaming', () => {
   const collect = async (iterable: AsyncIterable<string>) => {
     const parts: string[] = [];

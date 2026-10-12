@@ -19,6 +19,8 @@ import { AiProviderError } from '../ai/errors.js';
 import { TOKEN_VERIFIER, type TokenVerifier } from '../auth/auth.types.js';
 import { configureApp } from '../http/configure-app.js';
 import { CHAT_CONFIG, type ChatConfig } from './chat.config.js';
+import { FakeUsageRecorder } from '../../test/in-memory-usage.js';
+import { USAGE_RECORDER } from '../usage/usage.types.js';
 import { ModelsController } from './models.controller.js';
 import { ChatController } from './chat.controller.js';
 import { CHAT_REPOSITORY_FACTORY } from './chat.repository.js';
@@ -95,6 +97,7 @@ async function build(rateLimit = 20, maxStreams = 3): Promise<INestApplication> 
       { provide: EMBEDDING_MODEL, useValue: embedder },
       { provide: CHAT_CONFIG, useValue: config },
       { provide: CHAT_MODEL_CHOICES, useValue: ['fake/chat', 'fake/other'] },
+      { provide: USAGE_RECORDER, useValue: new FakeUsageRecorder() },
       { provide: CHAT_LIMITER, useValue: new SlidingWindowLimiter(rateLimit, 60_000) },
       { provide: STREAM_LIMITER, useValue: new ConcurrencyLimiter(maxStreams) },
       { provide: TOKEN_VERIFIER, useValue: verifier },

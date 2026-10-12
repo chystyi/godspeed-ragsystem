@@ -36,7 +36,11 @@ export class IndexingService {
   async index(
     repository: DocumentsRepository,
     document: DocumentRecord,
-    options: { force?: boolean } = {},
+    options: {
+      force?: boolean;
+      /** Called with the tokens the embedding cost, once the provider has answered. */
+      onUsage?: (usage: { model: string; tokens: number }) => void;
+    } = {},
   ): Promise<IndexingOutcome> {
     const hash = this.contentHash(document);
     if (!options.force && document.indexingStatus === 'indexed' && document.contentHash === hash) {
@@ -47,9 +51,14 @@ export class IndexingService {
       const chunks = chunkText(document.content);
       // The title is embedded with every chunk: a chunk like "set it to 30 seconds" is
       // ambiguous alone, but understandable as part of "Router setup guide".
-      const { vectors } = await this.embedder.embed(
+      const { vectors, usage } = await this.embedder.embed(
         chunks.map((chunk) => `${document.title}\n\n${chunk.content}`),
       );
+      try {
+        options.onUsage?.({ model: this.embedder.model, tokens: usage.totalTokens });
+      } catch {
+        // bookkeeping must not fail the indexing
+      }
       await repository.replaceChunks(document.id, {
         embeddingModel: this.embedder.model,
         contentHash: hash,

@@ -1,5 +1,5 @@
 import type { KbDocument, KbDocumentSummary } from '@kb/shared';
-import { Inject, Injectable } from '@nestjs/common';
+import { Inject, Injectable, Logger } from '@nestjs/common';
 import type { AuthUser } from '../auth/auth.types.js';
 import {
   DOCUMENTS_REPOSITORY_FACTORY,
@@ -9,6 +9,7 @@ import {
 } from './documents.repository.js';
 import type { CreateDocumentDto, UpdateDocumentDto } from './documents.schemas.js';
 import { DocumentNotFoundError } from './errors.js';
+import { USAGE_RECORDER, type UsageRecorder } from '../usage/usage.types.js';
 import { IndexingService } from './indexing.service.js';
 
 function toDocument({ contentHash: _hash, ...document }: DocumentRecord): KbDocument {
@@ -20,12 +21,15 @@ export class DocumentsService {
   constructor(
     @Inject(DOCUMENTS_REPOSITORY_FACTORY) private readonly repositories: DocumentsRepositoryFactory,
     private readonly indexing: IndexingService,
+    @Inject(USAGE_RECORDER) private readonly usage: UsageRecorder,
   ) {}
+
+  private readonly logger = new Logger(DocumentsService.name);
 
   async create(user: AuthUser, input: CreateDocumentDto): Promise<KbDocument> {
     const repository = this.repositories.forUser(user.token);
     const created = await repository.create(input);
-    return this.indexAndReload(repository, created);
+    return this.indexAndReload(user, repository, created);
   }
 
   list(user: AuthUser): Promise<KbDocumentSummary[]> {
@@ -43,7 +47,7 @@ export class DocumentsService {
     const updated = await repository.update(id, patch);
     if (!updated) throw new DocumentNotFoundError(id);
     // Unchanged title/text/model make this a no-op (tags are not embedded).
-    return this.indexAndReload(repository, updated);
+    return this.indexAndReload(user, repository, updated);
   }
 
   async remove(user: AuthUser, id: string): Promise<void> {
@@ -55,16 +59,23 @@ export class DocumentsService {
     const repository = this.repositories.forUser(user.token);
     const found = await repository.findById(id);
     if (!found) throw new DocumentNotFoundError(id);
-    return this.indexAndReload(repository, found, { force: true });
+    return this.indexAndReload(user, repository, found, { force: true });
   }
 
   /** Indexing problems never fail the request: the result shows the document's status. */
   private async indexAndReload(
+    user: AuthUser,
     repository: DocumentsRepository,
     document: DocumentRecord,
     options: { force?: boolean } = {},
   ): Promise<KbDocument> {
-    await this.indexing.index(repository, document, options);
+    await this.indexing.index(repository, document, {
+      ...options,
+      onUsage: ({ model, tokens }) =>
+        void this.usage
+          .record(user, { kind: 'embedding', model, promptTokens: tokens, completionTokens: 0 })
+          .catch((error: unknown) => this.logger.warn(`usage not recorded: ${String(error)}`)),
+    });
     return toDocument((await repository.findById(document.id)) ?? document);
   }
 }

@@ -404,6 +404,39 @@ describe.skipIf(!live)('database isolation and retrieval (live)', () => {
     }, 60000);
   });
 
+  describe('token usage', () => {
+    const record = (client: SupabaseClient, over: Record<string, unknown> = {}) =>
+      client.rpc('record_usage', { p_kind: 'chat', p_model: 'test/model', p_prompt_tokens: 100, p_completion_tokens: 20, ...over });
+
+    it('counts up per day, kind and model, and shows each user only their own rows', async () => {
+      expect((await record(alice)).error).toBeNull();
+      expect((await record(alice, { p_prompt_tokens: 50, p_completion_tokens: 5 })).error).toBeNull();
+      expect((await record(alice, { p_kind: 'embedding', p_model: 'test/embed', p_completion_tokens: 0 })).error).toBeNull();
+      const rows = (await alice.from('usage_daily').select('kind, model, requests, prompt_tokens, completion_tokens').order('kind')).data;
+      expect(rows).toEqual([
+        { kind: 'chat', model: 'test/model', requests: 2, prompt_tokens: 150, completion_tokens: 25 },
+        { kind: 'embedding', model: 'test/embed', requests: 1, prompt_tokens: 100, completion_tokens: 0 },
+      ]);
+      expect((await bob.from('usage_daily').select('*')).data).toEqual([]);
+    });
+
+    it('cannot be written to directly, by a user or by a visitor without an account', async () => {
+      const row = { kind: 'chat', model: 'x', requests: 1, prompt_tokens: 999999, completion_tokens: 0 };
+      expect((await alice.from('usage_daily').insert(row)).error?.code).toBe('42501');
+      expect((await alice.from('usage_daily').update({ prompt_tokens: 0 }).eq('model', 'test/model')).error?.code).toBe('42501');
+      expect((await anon.rpc('record_usage', { p_kind: 'chat', p_model: 'x', p_prompt_tokens: 1, p_completion_tokens: 1 })).error).not.toBeNull();
+    });
+
+    it.each([
+      ['an unknown kind', { p_kind: 'video' }],
+      ['an empty model name', { p_model: '' }],
+      ['a negative count', { p_prompt_tokens: -1 }],
+      ['an absurd count', { p_completion_tokens: 10_000_001 }],
+    ])('rejects %s', async (_name, over) => {
+      expect((await record(alice, over)).error?.code).toBe('22023');
+    });
+  });
+
   describe('indexing results are tied to the version of the text', () => {
     it('refuses a result for text that has changed since (a stale embedding run)', async () => {
       await indexAs(alice, docId, 'h-current');
