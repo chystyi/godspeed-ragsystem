@@ -2,6 +2,10 @@ import type { Metadata } from "next";
 
 export const metadata: Metadata = { title: "Documents" };
 
+// Filled in by the browser after sign-in; opting out keeps the dev-mode check for instant
+// navigation from reporting this page (see the layout of this section).
+export const instant = false;
+
 export default function DocumentsHome() {
   return (
     <div className="flex h-full items-center justify-center px-6 py-16 text-center">

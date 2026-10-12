@@ -11,6 +11,10 @@ async function Conversation({ params }: Pick<PageProps<"/chat/[id]">, "params">)
   return <ChatView key={id} conversationId={id} />;
 }
 
+// Shown after sign-in and filled in by the browser; opting out keeps the dev-mode check for
+// instant navigation from reporting this page (see the layout of this section).
+export const instant = false;
+
 export default function ConversationPage({ params }: PageProps<"/chat/[id]">) {
   return (
     <Suspense fallback={<Skeleton className="m-8 h-64 max-w-3xl" />}>
