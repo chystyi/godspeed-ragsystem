@@ -1,35 +1,41 @@
 # Loom scripts
 
-Two videos, each about 5 minutes. Speak plainly; show, do not read. Before recording: `docker compose up --build`, a fresh account, an empty library, two or three short documents ready to paste (a home-network guide, a recipe, a project note).
+The assignment asks for two walkthroughs, both linked in the README. The first is also emailed
+(to harish@goodspeed.studio and clinton@goodspeed.studio) and must be **no longer than 5 minutes**; keep
+the second under 5 as well.
 
-## Video 1 — Product demo (for someone who has never seen the code)
+Before recording: `docker compose up --build`, a fresh account, an empty library, two or three short
+documents ready to paste (a home-network guide, a recipe, a project note). Speak plainly; show, do not read.
 
-**0:00 — What it is (20 s).** "This is a personal knowledge base. You write down what you know, and then you can ask questions about it. Answers use only your own documents and show where they came from."
+## Video 1 — What I built (max 5 min)
 
-**0:20 — Sign in (20 s).** Show the login screen, sign in. Mention: each person sees only their own data.
+**0:00 — What it is (15 s).** "A personal knowledge base: you write documents, then ask questions about them. Answers use your own text and show where each claim came from."
 
-**0:40 — Add knowledge (60 s).** New document → paste the home-network guide, add tags, save (Cmd+S). Point at the status badge: "It is split into passages and indexed so it can be found by meaning, not just by words." Add a second document on a different topic. Show a validation message by saving an empty title.
+**0:15 — Sign in and add knowledge (60 s).** Sign in (each user sees only their own data). New document → paste the home-network guide, tags, save with Cmd+S. Point at the status badge: "The text is split into passages and embedded so it can be found by meaning." Add a second document on another topic. Save an empty title to show validation.
 
-**1:40 — Ask (90 s).** Chat → "How do I make my home Wi-Fi safer?" Let it stream. Click a citation `[1]`: the source panel shows the exact passage. "Every claim points back to a passage you wrote."
+**1:15 — Ask, with sources (75 s).** Chat → "How do I make my home Wi-Fi safer?" The answer streams in. Click citation `[1]`: the exact passage opens. Ask a follow-up ("and the guest network?") — it understands the context.
 
-**3:10 — Follow-up and honesty (60 s).** Ask "and what about the guest network?" — works as a follow-up. Then ask something not in the documents (e.g. "Who won the 2018 World Cup?"). Point out: "It does not pretend this came from your documents: no sources are shown, and it answers as a normal assistant." Switch the model in the selector under the input and ask again; ask one question in Russian to show it follows your language.
+**2:30 — Beyond the documents (45 s).** Say "Hello", then ask something general, then one in Russian. "When nothing in your documents applies it answers as a normal assistant, in your language, and does not pretend it came from your documents — no sources are shown." Switch the model in the selector and ask again.
 
-**4:10 — Housekeeping (30 s).** Show the conversation list, reload the page (history is kept), delete a conversation with the confirmation. Show it on a phone-width window.
+**3:15 — Under the hood (80 s).** Show the repo tree for 10 s (Turborepo: `apps/web`, `apps/api`, `packages/shared`, `supabase/migrations`). Three points, each ~20 s:
+1. The API acts as the user, so row level security is the real access control; writes go through functions that check `auth.uid()`; limits live in the database.
+2. The AI layer is two small ports (`ChatModel`, `EmbeddingModel`) and one OpenAI-compatible adapter: show `.env` — change `AI_BASE_URL` / model and it is another provider (OpenRouter, Groq, Ollama).
+3. Chunking 1000/150 with structure awareness; threshold on similarity; numbered, escaped sources in the prompt.
 
-**4:40 — Close (20 s).** "Next steps would be file upload and background indexing. The code walkthrough is in the second video."
+**4:35 — Close (25 s).** "Tests: about 520, including live suites against the real database. Not done: file upload and a token-usage view; the README lists what I would do next."
 
-## Video 2 — Code walkthrough (for an engineer)
+## Video 2 — How I used AI to move faster (max 5 min)
 
-**0:00 — Shape (40 s).** Open the repo tree: `apps/web`, `apps/api`, `packages/shared`, `supabase/migrations`. "Turborepo monorepo, one `.env`, shared types." Show `docker-compose.yml` and run it.
+Be concrete and honest; show real artifacts (the git log, a test, a review report). The point is judgment, not speed.
 
-**0:40 — Data and security first (90 s).** Open `20261009120000_tables.sql` and the row level security migration. "The API calls Supabase with the user's own token, so row level security is the real boundary." Open `harden_writes.sql`: revoked direct writes, `SECURITY DEFINER` functions checking `auth.uid()`, row caps. Mention the live test `rls.live.spec.ts` that tries cross-user reads and forged ids against the real database.
+**0:00 — Setup (30 s).** "I built this with Claude Code in the terminal. I decided the architecture and the product rules; the AI wrote most of the code under tests I asked for." Show the commit history: small steps, one concern each.
 
-**2:10 — Indexing (60 s).** `chunker.ts` (structure-aware, overlap, never splits a character), `indexing.service.ts` (status, hash to skip unchanged text, stale-index rejection, fixed error messages).
+**0:30 — Decisions were mine (45 s).** Examples: Supabase + pgvector instead of a separate vector store (row level security covers retrieval too); the API acts with the user's token; a provider layer with two ports instead of one SDK call. "I used the AI to challenge these, then chose."
 
-**3:10 — The chat path (90 s).** `chat.service.ts`: rewrite → embed → `match_chunks` → threshold → `prompt.ts` (numbered, escaped sources) → stream. Show the no-answer path that skips the model and the abort signal that cancels the provider call. Show `sse.ts` on the client.
+**1:15 — Tests first, and tests that are tested (60 s).** Show a spec written before the code (red, then green). Show one mutation check: break the code on purpose and watch the test fail. "A passing test proves little until you have seen it fail."
 
-**4:40 — Swapping providers (40 s).** `ai.types.ts` ports, `openai-compatible.ts`, then change `AI_BASE_URL` / model in `.env` live (e.g. to Groq) and ask one question. Mention the embedding-dimension and threshold caveats.
+**2:15 — AI reviewing AI (75 s).** I had separate agents hunt for vulnerabilities and bugs, then verified every finding myself before fixing it. Show the report: real catches (a way to bypass limits by calling the database directly, a stale-index race, an API key that could be sent to the wrong provider) and findings I declined or documented (per-IP limits, token revocation). Point out that agent reports are claims to check, not truth.
 
-**5:20 — Testing (40 s).** Run `npm test`. Explain the layers (unit, fake provider HTTP server, in-memory repositories, live suites) and that I verified key tests by breaking the code on purpose.
+**3:30 — Where the AI was wrong and how I caught it (60 s).** Pick two: a commit message that said all tests passed while one timed out (found, fixed, admitted); a focus ring that showed as a double black frame because a global CSS rule overrode the utility classes (found by looking at the real screen, not by tests). Also: the first RAG behavior refused everything outside the documents — a product call I changed after using it.
 
-**6:00 — Trade-offs (40 s).** Read the "Known limits" section: synchronous indexing, in-memory limits, token in the browser. "What I would do next, in this order."
+**4:30 — Takeaways (30 s).** What worked: small steps, tests as the contract, reviews by a second pair of eyes (human or agent), checking the running app. What I would still not delegate: architecture, security boundaries, and deciding what "done" means.

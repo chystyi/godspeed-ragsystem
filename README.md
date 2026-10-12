@@ -7,7 +7,7 @@ Write down what you know, then ask questions about it. Answers are based on your
 - **Data:** Supabase — Auth, Postgres with row level security and pgvector (HNSW).
 - **AI:** any OpenAI-compatible provider (OpenRouter by default), behind a small interface.
 
-Loom walkthroughs: _product demo_ — `<add link>` · _code walkthrough_ — `<add link>` (scripts in [docs/loom-scripts.md](docs/loom-scripts.md)).
+Loom walkthroughs: [what I built](<add link>) · [how I used AI to accelerate](<add link>) (scripts in [docs/loom-scripts.md](docs/loom-scripts.md)).
 
 ## Run it
 
