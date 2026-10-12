@@ -32,7 +32,12 @@ class FakeChat implements ChatModel {
   partDelayMs = 0;
   /** True once the streamed answer was finished or abandoned (the provider stream was closed). */
   streamClosed = false;
-  async complete(): Promise<ChatCompletion> {
+  completeDelayMs = 0;
+  /** The cancellation signal the last plain answer was given. */
+  completeSignal: AbortSignal | undefined;
+  async complete(_messages?: unknown, options?: { signal?: AbortSignal }): Promise<ChatCompletion> {
+    this.completeSignal = options?.signal;
+    if (this.completeDelayMs) await new Promise((r) => setTimeout(r, this.completeDelayMs));
     if (this.reply instanceof Error) throw this.reply;
     return { content: this.reply, model: 'fake' };
   }
@@ -78,6 +83,7 @@ async function build(rateLimit = 20, maxStreams = 3): Promise<INestApplication> 
     rewriteQueries: false,
     rateLimitPerMinute: rateLimit,
     maxConcurrentStreams: maxStreams,
+    maxAnswerTokens: 2048,
     allowGeneralAnswers: false,
   };
   const moduleRef = await Test.createTestingModule({
@@ -543,5 +549,36 @@ describe('choosing the chat model', () => {
       .set('Authorization', 'Bearer token-alice')
       .send({ content: 'How do I secure the router?', model: 'evil/expensive-model' });
     expect(res.status).toBe(422);
+  });
+});
+
+describe('plain answers share the limits of streamed ones', () => {
+  it('refuses a new plain answer while the user already has the maximum running', async () => {
+    await app.close();
+    app = await build(100, 1);
+    chat.completeDelayMs = 300;
+    const a = await newConversation();
+    const first = Promise.resolve(send(a.id, 'alice', 'q'));
+    await new Promise((r) => setTimeout(r, 100));
+    const second = await send(a.id, 'alice', 'q');
+    expect(second.status).toBe(429);
+    expect(second.body.code).toBe('too_many_requests');
+    expect((await first).status).toBe(201);
+    chat.completeDelayMs = 0;
+    expect((await send(a.id, 'alice', 'q')).status).toBe(201); // the slot is free again
+  });
+
+  it('stops the model call when the client hangs up', async () => {
+    chat.completeDelayMs = 400;
+    const a = await newConversation();
+    const pending = http().post(`/api/conversations/${a.id}/messages`).set(as('alice')).send({ content: 'q' });
+    void pending.then(
+      () => undefined,
+      () => undefined,
+    );
+    await new Promise((r) => setTimeout(r, 150));
+    pending.abort();
+    await new Promise((r) => setTimeout(r, 100));
+    expect(chat.completeSignal?.aborted).toBe(true);
   });
 });

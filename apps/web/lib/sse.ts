@@ -31,7 +31,14 @@ export async function* readChatEvents(
       }
     }
     buffer = (buffer + decoder.decode()).replace(/\r\n?/g, "\n");
-    const last = buffer.trim() ? parseBlock(buffer) : null;
+    // The connection may have ended in the middle of the last event. That is an interrupted
+    // stream (the caller notices the missing final event), not a damaged one.
+    let last: ChatStreamEvent | null = null;
+    try {
+      last = buffer.trim() ? parseBlock(buffer) : null;
+    } catch {
+      last = null;
+    }
     if (last) yield last;
   } finally {
     // Reading stopped early (the caller left, or failed): close the connection instead of leaving it open.

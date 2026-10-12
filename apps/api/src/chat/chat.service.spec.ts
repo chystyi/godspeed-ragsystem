@@ -65,6 +65,7 @@ const config = (over: Partial<ChatConfig> = {}): ChatConfig => ({
   rewriteQueries: true,
   rateLimitPerMinute: 20,
   maxConcurrentStreams: 3,
+  maxAnswerTokens: 1500,
   allowGeneralAnswers: false, // the strict behavior; the tests of the general mode switch it on
   ...over,
 });
@@ -254,6 +255,29 @@ describe('follow-up questions', () => {
     await svc.ask(alice, conversation.id, 'q4');
     const history = chat.calls[0].slice(1, -1).map((m) => m.content);
     expect(history).toEqual(['q3', 'default answer']); // the last two messages: q3 and its answer
+  });
+});
+
+describe('answer length and history', () => {
+  it('caps the length of every answer, plain and streamed', async () => {
+    db.corpus = [chunk(1, 0.8)];
+    const svc = service({ rewriteQueries: false, maxAnswerTokens: 1500 });
+    const conversation = await start(svc);
+    await svc.ask(alice, conversation.id, 'What?');
+    await collect(svc, 'And?', conversation.id);
+    expect(chat.options[0]?.maxTokens).toBe(1500);
+    expect(chat.streamOptions[0]?.maxTokens).toBe(1500);
+  });
+
+  it('keeps the last exchange as context even when the setting is odd', async () => {
+    const svc = service({ historyMessages: 1, rewriteQueries: false });
+    db.corpus = [chunk(1, 0.8)];
+    const conversation = await start(svc);
+    await svc.ask(alice, conversation.id, 'first question');
+    chat.calls.length = 0;
+    await svc.ask(alice, conversation.id, 'second question');
+    const history = chat.calls[0].slice(1, -1).map((m) => m.content);
+    expect(history).toEqual(['first question', 'default answer']);
   });
 });
 

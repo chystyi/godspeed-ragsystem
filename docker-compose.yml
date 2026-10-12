@@ -5,9 +5,35 @@ services:
     build:
       context: .
       dockerfile: apps/api/Dockerfile
-    env_file: .env
+    # Only what the API needs. The whole .env is deliberately NOT passed on: it also holds the
+    # service-role key and the Supabase access token, which the API never uses and must not hold.
+    # An empty value counts as "not set".
     environment:
+      API_PORT: "4000"
       WEB_ORIGIN: ${WEB_ORIGIN:-http://localhost:${WEB_PORT:-3000}}
+      AI_BASE_URL: ${AI_BASE_URL:-}
+      AI_API_KEY: ${AI_API_KEY:-}
+      AI_CHAT_MODEL: ${AI_CHAT_MODEL:-}
+      AI_CHAT_MODELS: ${AI_CHAT_MODELS:-}
+      AI_EMBEDDING_MODEL: ${AI_EMBEDDING_MODEL:-}
+      AI_EMBEDDING_DIMENSIONS: ${AI_EMBEDDING_DIMENSIONS:-}
+      AI_EMBEDDING_SEND_DIMENSIONS: ${AI_EMBEDDING_SEND_DIMENSIONS:-}
+      AI_EMBEDDING_BASE_URL: ${AI_EMBEDDING_BASE_URL:-}
+      AI_EMBEDDING_API_KEY: ${AI_EMBEDDING_API_KEY:-}
+      AI_TIMEOUT_MS: ${AI_TIMEOUT_MS:-}
+      AI_MAX_RETRIES: ${AI_MAX_RETRIES:-}
+      CHAT_TOP_K: ${CHAT_TOP_K:-}
+      CHAT_MIN_SIMILARITY: ${CHAT_MIN_SIMILARITY:-}
+      CHAT_HISTORY_MESSAGES: ${CHAT_HISTORY_MESSAGES:-}
+      CHAT_REWRITE_QUERIES: ${CHAT_REWRITE_QUERIES:-}
+      CHAT_RATE_LIMIT_PER_MINUTE: ${CHAT_RATE_LIMIT_PER_MINUTE:-}
+      CHAT_MAX_CONCURRENT_STREAMS: ${CHAT_MAX_CONCURRENT_STREAMS:-}
+      CHAT_MAX_ANSWER_TOKENS: ${CHAT_MAX_ANSWER_TOKENS:-}
+      CHAT_ALLOW_GENERAL_ANSWERS: ${CHAT_ALLOW_GENERAL_ANSWERS:-}
+      DOC_WRITES_PER_MINUTE: ${DOC_WRITES_PER_MINUTE:-}
+      DOC_MAX_CONCURRENT_WRITES: ${DOC_MAX_CONCURRENT_WRITES:-}
+      SUPABASE_URL: ${SUPABASE_URL:-}
+      SUPABASE_ANON_KEY: ${SUPABASE_ANON_KEY:-}
     ports:
       - "${API_PORT:-4000}:4000"
     restart: unless-stopped

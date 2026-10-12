@@ -171,6 +171,16 @@ describe('unusable answers from a provider', () => {
     },
   );
 
+  it('never yields a whitespace-only first part, so a stream is not announced before it has content', async () => {
+    server.setHandler(() => streamReply(['\n', ' ', 'Hello', ' world']));
+    const parts = await (async () => {
+      const seen: string[] = [];
+      for await (const part of createChatModel(chatConfig()).stream([{ role: 'user', content: 'x' }])) seen.push(part);
+      return seen;
+    })();
+    expect(parts).toEqual(['\n Hello', ' world']);
+  });
+
   it('rejects a streamed answer that is only whitespace', async () => {
     server.setHandler(() => streamReply(['  ', '\n']));
     const error = await (async () => {

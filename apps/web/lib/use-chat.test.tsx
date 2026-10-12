@@ -7,10 +7,11 @@ import { ApiRequestError } from "./errors";
 const mocks = vi.hoisted(() => ({
   streamAnswer: vi.fn(),
   createConversation: vi.fn(),
+  deleteConversation: vi.fn(),
 }));
 vi.mock("./api", () => ({
   streamAnswer: mocks.streamAnswer,
-  api: { createConversation: mocks.createConversation },
+  api: { createConversation: mocks.createConversation, deleteConversation: mocks.deleteConversation },
 }));
 
 import { useChat } from "./use-chat";
@@ -70,6 +71,7 @@ let saved: Mock<(conversationId: string) => Promise<void>>;
 beforeEach(() => {
   mocks.streamAnswer.mockReset();
   mocks.createConversation.mockReset();
+  mocks.deleteConversation.mockReset().mockResolvedValue(undefined);
   saved = vi.fn<(conversationId: string) => Promise<void>>(async () => undefined);
   vi.spyOn(window.history, "replaceState").mockImplementation(() => undefined);
 });
@@ -176,6 +178,25 @@ describe("useChat", () => {
     expect(result.current.pending).toMatchObject({ status: "interrupted", answer: "Half an " });
     expect(result.current.error).toMatch(/not available/i);
     expect(saved).not.toHaveBeenCalled();
+  });
+
+  it("keeps the text already received when the connection breaks in the middle of the answer", async () => {
+    const stream = controlledStream();
+    mocks.streamAnswer.mockImplementation((_id, _q, signal) => stream.iterate(signal));
+    const { result } = setup();
+    let sending!: Promise<boolean>;
+    act(() => {
+      sending = result.current.send("Q");
+    });
+    await act(async () => stream.push({ type: "start", sources: [source] }));
+    await act(async () => stream.push({ type: "delta", text: "Disable " }));
+    await act(async () => {
+      stream.push(new TypeError("network error"));
+      await sending;
+    });
+    expect(await sending).toBe(false);
+    expect(result.current.pending).toMatchObject({ status: "interrupted", answer: "Disable " });
+    expect(result.current.error).not.toBeNull();
   });
 
   it("stops on request: partial text stays, marked as stopped, nothing is saved", async () => {
@@ -289,5 +310,68 @@ describe("useChat", () => {
     await waitFor(() => expect(seen).toBeDefined());
     unmount();
     expect(seen?.aborted).toBe(true);
+  });
+});
+
+describe("useChat: a conversation created for a question that got no answer", () => {
+  it("is removed again when the answer fails to start, and the next question starts a fresh one", async () => {
+    mocks.createConversation.mockResolvedValueOnce({ id: "new-1" }).mockResolvedValueOnce({ id: "new-2" });
+    mocks.streamAnswer.mockImplementationOnce(async function* () {
+      throw new ApiRequestError(503, "ai_unavailable", "down");
+    });
+    const { result } = setup(null);
+    await act(async () => {
+      await result.current.send("First question");
+    });
+    expect(mocks.deleteConversation).toHaveBeenCalledExactlyOnceWith("new-1");
+    expect(result.current.conversationId).toBeNull();
+
+    const stream = controlledStream();
+    mocks.streamAnswer.mockImplementationOnce((_id, _q, signal) => stream.iterate(signal));
+    act(() => {
+      void result.current.send("Second question");
+    });
+    await waitFor(() => expect(mocks.streamAnswer).toHaveBeenLastCalledWith("new-2", "Second question", expect.any(AbortSignal), undefined));
+    stream.end();
+  });
+
+  it("is removed when the answer breaks off or the person stops it, since nothing was saved", async () => {
+    mocks.createConversation.mockResolvedValue({ id: "new-1" });
+    const stream = controlledStream();
+    mocks.streamAnswer.mockImplementation((_id, _q, signal) => stream.iterate(signal));
+    const { result } = setup(null);
+    let sending!: Promise<boolean>;
+    act(() => {
+      sending = result.current.send("Q");
+    });
+    await act(async () => stream.push({ type: "delta", text: "Hi" }));
+    await act(async () => {
+      result.current.stop();
+      await sending;
+    });
+    expect(mocks.deleteConversation).toHaveBeenCalledExactlyOnceWith("new-1");
+    expect(result.current.pending).toMatchObject({ status: "stopped", answer: "Hi" });
+  });
+
+  it("is kept once the answer is saved, and an existing conversation is never removed", async () => {
+    mocks.createConversation.mockResolvedValue({ id: "new-1" });
+    const stream = controlledStream();
+    mocks.streamAnswer.mockImplementation((_id, _q, signal) => stream.iterate(signal));
+    const created = setup(null);
+    await act(async () => {
+      stream.push({ type: "done", userMessage: message("user", "q"), assistantMessage: message("assistant", "a") });
+      stream.end();
+      await created.result.current.send("Q");
+    });
+    expect(mocks.deleteConversation).not.toHaveBeenCalled();
+
+    mocks.streamAnswer.mockImplementation(async function* () {
+      throw new ApiRequestError(503, "ai_unavailable", "down");
+    });
+    const existing = setup("conv-1");
+    await act(async () => {
+      await existing.result.current.send("Q");
+    });
+    expect(mocks.deleteConversation).not.toHaveBeenCalled();
   });
 });

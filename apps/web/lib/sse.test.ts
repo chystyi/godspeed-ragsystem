@@ -115,3 +115,11 @@ describe("readChatEvents", () => {
     expect(await collect(streamOf([]))).toEqual([]);
   });
 });
+
+describe("readChatEvents: a connection that ends badly", () => {
+  it("ignores an event that was cut off in the middle instead of throwing", async () => {
+    const cut = `event: delta\ndata: {"type":"delta","text":"Disa`;
+    const received = await collect(streamOf([encode(frame({ type: "start", sources: [] })), encode(cut)]));
+    expect(received).toEqual([{ type: "start", sources: [] }]);
+  });
+});

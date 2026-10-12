@@ -14,7 +14,12 @@ import {
 import { AuthGuard } from '../auth/auth.guard.js';
 import type { AuthUser } from '../auth/auth.types.js';
 import { CurrentUser } from '../auth/current-user.decorator.js';
-import { DOCUMENT_WRITE_LIMITER, type SlidingWindowLimiter } from '../http/rate-limiter.js';
+import {
+  type ConcurrencyLimiter,
+  DOCUMENT_CONCURRENCY_LIMITER,
+  DOCUMENT_WRITE_LIMITER,
+  type SlidingWindowLimiter,
+} from '../http/rate-limiter.js';
 import { UuidPipe, ZodPipe } from '../http/validation.js';
 import { DocumentNotFoundError } from './errors.js';
 import {
@@ -33,7 +38,19 @@ export class DocumentsController {
   constructor(
     private readonly documents: DocumentsService,
     @Inject(DOCUMENT_WRITE_LIMITER) private readonly writes: SlidingWindowLimiter,
+    @Inject(DOCUMENT_CONCURRENCY_LIMITER) private readonly running: ConcurrencyLimiter,
   ) {}
+
+  /** Runs a write that embeds text while holding one of the user's few slots. */
+  private async guarded<T>(user: AuthUser, work: () => Promise<T>): Promise<T> {
+    this.writes.enforce(user.id); // after validation: invalid requests are free
+    const release = this.running.require(user.id);
+    try {
+      return await work();
+    } finally {
+      release();
+    }
+  }
 
   @Post()
   @HttpCode(201)
@@ -41,8 +58,7 @@ export class DocumentsController {
     @CurrentUser() user: AuthUser,
     @Body(new ZodPipe(createDocumentSchema)) body: CreateDocumentDto,
   ): Promise<KbDocument> {
-    this.writes.enforce(user.id); // after validation: invalid requests are free
-    return this.documents.create(user, body);
+    return this.guarded(user, () => this.documents.create(user, body));
   }
 
   @Get()
@@ -61,8 +77,7 @@ export class DocumentsController {
     @Param('id', documentId) id: string,
     @Body(new ZodPipe(updateDocumentSchema)) body: UpdateDocumentDto,
   ): Promise<KbDocument> {
-    this.writes.enforce(user.id);
-    return this.documents.update(user, id, body);
+    return this.guarded(user, () => this.documents.update(user, id, body));
   }
 
   @Delete(':id')
@@ -74,7 +89,6 @@ export class DocumentsController {
   @Post(':id/reindex')
   @HttpCode(200)
   reindex(@CurrentUser() user: AuthUser, @Param('id', documentId) id: string): Promise<KbDocument> {
-    this.writes.enforce(user.id);
-    return this.documents.reindex(user, id);
+    return this.guarded(user, () => this.documents.reindex(user, id));
   }
 }

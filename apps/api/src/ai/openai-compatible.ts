@@ -117,12 +117,20 @@ export function createChatModel(config: ChatConfig): ChatModel {
         throw toAiProviderError(error, 'chat stream');
       }
       let produced = false;
+      // Leading whitespace is held back until the first visible text, so the caller never sees a
+      // "start" that is followed by nothing.
+      let leading = '';
       try {
         for await (const chunk of response) {
           const text = chunk.choices[0]?.delta?.content;
-          if (text) {
-            if (text.trim() !== '') produced = true;
+          if (!text) continue;
+          if (produced) {
             yield text;
+          } else if (text.trim() !== '') {
+            produced = true;
+            yield leading + text;
+          } else {
+            leading += text;
           }
         }
       } catch (error) {

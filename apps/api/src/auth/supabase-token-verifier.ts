@@ -89,10 +89,11 @@ export class SupabaseTokenVerifier implements TokenVerifier {
 
   private claimsOf(
     token: string,
-    answer: { data: { claims?: { sub?: string } } | null; error: unknown },
+    answer: { data: { claims?: { sub?: string; role?: string } } | null; error: unknown },
   ): AuthUser | null {
     const subject = answer.data?.claims?.sub;
-    if (answer.error || !subject) return null;
+    // Only signed-in users: the public key's own token (role anon) and service tokens are not users.
+    if (answer.error || !subject || answer.data?.claims?.role !== 'authenticated') return null;
     return { id: subject, token };
   }
 
@@ -118,7 +119,17 @@ export class SupabaseTokenVerifier implements TokenVerifier {
     await this.loadKeys();
   }
 
-  private async loadKeys(): Promise<void> {
+  /** Requests that arrive while the keys are being fetched share that one fetch. */
+  private loading: Promise<void> | null = null;
+
+  private loadKeys(): Promise<void> {
+    this.loading ??= this.fetchKeySet().finally(() => {
+      this.loading = null;
+    });
+    return this.loading;
+  }
+
+  private async fetchKeySet(): Promise<void> {
     try {
       const response = await this.fetchKeys(`${this.config.url}/auth/v1/.well-known/jwks.json`, {
         signal: AbortSignal.timeout(KEY_FETCH_TIMEOUT_MS),

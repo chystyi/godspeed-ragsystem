@@ -98,3 +98,4 @@ export class ConcurrencyLimiter {
 export const CHAT_LIMITER = Symbol('CHAT_LIMITER');
 export const STREAM_LIMITER = Symbol('STREAM_LIMITER');
 export const DOCUMENT_WRITE_LIMITER = Symbol('DOCUMENT_WRITE_LIMITER');
+export const DOCUMENT_CONCURRENCY_LIMITER = Symbol('DOCUMENT_CONCURRENCY_LIMITER');

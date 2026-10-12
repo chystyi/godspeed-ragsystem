@@ -31,6 +31,11 @@ export class ApiExceptionFilter implements ExceptionFilter {
   catch(exception: unknown, host: ArgumentsHost): void {
     const response = host.switchToHttp().getResponse<Response>();
     const { status, body, headers } = this.map(exception);
+    // Too late for a JSON error (a stream is already open): end the response instead of crashing.
+    if (response.headersSent) {
+      response.end();
+      return;
+    }
     if (headers) response.set(headers);
     response.status(status).json(body);
   }

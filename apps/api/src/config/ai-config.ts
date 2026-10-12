@@ -52,6 +52,14 @@ export function loadAiConfig(env: Record<string, string | undefined>): AiConfig 
     throw new ConfigError(`invalid or missing environment variables: ${names.join(', ')}`);
   }
   const v = parsed.data;
+  // The key of the chat provider is never sent anywhere else by default: another embedding
+  // provider needs its own key.
+  const sameProvider = (a: string, b: string) => new URL(a).origin === new URL(b).origin;
+  if (v.AI_EMBEDDING_BASE_URL && !v.AI_EMBEDDING_API_KEY && !sameProvider(v.AI_EMBEDDING_BASE_URL, v.AI_BASE_URL)) {
+    throw new ConfigError(
+      'AI_EMBEDDING_API_KEY is required when AI_EMBEDDING_BASE_URL points to another provider than AI_BASE_URL',
+    );
+  }
   const connection = { timeoutMs: v.AI_TIMEOUT_MS, maxRetries: v.AI_MAX_RETRIES };
   const extra = (v.AI_CHAT_MODELS ?? '').split(',').map((name) => name.trim()).filter(Boolean);
   return {

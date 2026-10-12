@@ -50,16 +50,31 @@ export function useChat({ initialConversationId, onExchangeSaved }: UseChatOptio
       const update = (change: Partial<PendingExchange>) =>
         setPending((current) => (current ? { ...current, ...change } : current));
 
+      let createdHere: string | null = null;
+      let begun = false; // some of the answer reached the screen
+      // A conversation made for this question has nothing in it if no answer was saved: remove it
+      // (it would count against the person's limit and show up empty), so the next question starts afresh.
+      const discardEmptyConversation = () => {
+        if (!createdHere) return;
+        const empty = createdHere;
+        createdHere = null;
+        setConversationId(null);
+        void api.deleteConversation(empty).catch(() => undefined);
+      };
+
       try {
         let id = conversationId;
         if (!id) {
           id = (await api.createConversation(undefined, abort.signal)).id;
+          createdHere = id;
           setConversationId(id);
         }
         for await (const event of streamAnswer(id, question, abort.signal, model)) {
           if (event.type === "start") {
+            begun = true;
             update({ sources: event.sources, status: "streaming" });
           } else if (event.type === "delta") {
+            begun = true;
             setPending((current) => (current ? { ...current, answer: current.answer + event.text, status: "streaming" } : current));
           } else if (event.type === "done") {
             try {
@@ -73,20 +88,26 @@ export function useChat({ initialConversationId, onExchangeSaved }: UseChatOptio
           } else {
             setError(describeError(new ApiRequestError(0, event.code, event.message)));
             update({ status: "interrupted" });
+            discardEmptyConversation();
             return false;
           }
         }
         // The stream ended without a final event: treat it as an interruption.
         setError(describeError(new ApiRequestError(0, "network", "stream ended early")));
         update({ status: "interrupted" });
+        discardEmptyConversation();
         return false;
       } catch (failure) {
+        discardEmptyConversation();
         if (isAbort(failure)) {
           update({ status: "stopped" });
           return false;
         }
         setError(describeError(failure));
-        setPending(null);
+        // Text that already arrived stays visible, marked as unsaved; only a failure before any
+        // text hands the question back.
+        if (begun) update({ status: "interrupted" });
+        else setPending(null);
         return false;
       } finally {
         controller.current = null;

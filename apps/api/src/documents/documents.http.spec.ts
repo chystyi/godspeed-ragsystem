@@ -7,7 +7,12 @@ import { EMBEDDING_MODEL, type EmbeddingModel } from '../ai/ai.types.js';
 import { AiProviderError } from '../ai/errors.js';
 import { TOKEN_VERIFIER, type TokenVerifier } from '../auth/auth.types.js';
 import { configureApp } from '../http/configure-app.js';
-import { DOCUMENT_WRITE_LIMITER, SlidingWindowLimiter } from '../http/rate-limiter.js';
+import {
+  ConcurrencyLimiter,
+  DOCUMENT_CONCURRENCY_LIMITER,
+  DOCUMENT_WRITE_LIMITER,
+  SlidingWindowLimiter,
+} from '../http/rate-limiter.js';
 import { DOCUMENTS_REPOSITORY_FACTORY } from './documents.repository.js';
 import { DocumentsController } from './documents.controller.js';
 import { DocumentsService } from './documents.service.js';
@@ -17,9 +22,11 @@ class FakeEmbedder implements EmbeddingModel {
   model = 'fake/embed';
   dimensions = 4;
   calls = 0;
+  delayMs = 0;
   failWith: Error | undefined;
   async embed(texts: string[]) {
     this.calls++;
+    if (this.delayMs) await new Promise((r) => setTimeout(r, this.delayMs));
     if (this.failWith) throw this.failWith;
     return { vectors: texts.map(() => [1, 0, 0, 0]), usage: { totalTokens: texts.length } };
   }
@@ -36,7 +43,7 @@ let app: INestApplication;
 let db: InMemoryDatabase;
 let embedder: FakeEmbedder;
 
-async function build(writesPerMinute = 1000): Promise<INestApplication> {
+async function build(writesPerMinute = 1000, maxConcurrent = 3): Promise<INestApplication> {
   const moduleRef = await Test.createTestingModule({
     controllers: [DocumentsController],
     providers: [
@@ -46,6 +53,7 @@ async function build(writesPerMinute = 1000): Promise<INestApplication> {
       { provide: EMBEDDING_MODEL, useValue: embedder },
       { provide: TOKEN_VERIFIER, useValue: verifier },
       { provide: DOCUMENT_WRITE_LIMITER, useValue: new SlidingWindowLimiter(writesPerMinute, 60_000) },
+      { provide: DOCUMENT_CONCURRENCY_LIMITER, useValue: new ConcurrencyLimiter(maxConcurrent) },
     ],
   }).compile();
   const instance = moduleRef.createNestApplication({ bodyParser: false, logger: false });
@@ -280,6 +288,7 @@ describe('error format', () => {
         { provide: EMBEDDING_MODEL, useValue: embedder },
         { provide: TOKEN_VERIFIER, useValue: verifier },
         { provide: DOCUMENT_WRITE_LIMITER, useValue: new SlidingWindowLimiter(1000, 60_000) },
+        { provide: DOCUMENT_CONCURRENCY_LIMITER, useValue: new ConcurrencyLimiter(3) },
       ],
     }).compile();
     const other = moduleRef.createNestApplication({ bodyParser: false, logger: false });
@@ -290,6 +299,35 @@ describe('error format', () => {
     expect(res.body).toEqual({ code: 'internal_error', message: 'internal server error' });
     expect(res.text).not.toContain('hunter2');
     await other.close();
+  });
+});
+
+describe('writes running at the same time', () => {
+  it('refuses another write while the user has the maximum embedding, and frees the slots afterwards', async () => {
+    await app.close();
+    app = await build(1000, 2);
+    embedder.delayMs = 250;
+    const first = Promise.resolve(create('alice', { title: 'a', content: 'x' }));
+    const second = Promise.resolve(create('alice', { title: 'b', content: 'x' }));
+    await new Promise((r) => setTimeout(r, 100));
+    const third = await create('alice', { title: 'c', content: 'x' });
+    expect(third.status).toBe(429);
+    expect(third.body.code).toBe('too_many_requests');
+    expect((await first).status).toBe(201);
+    expect((await second).status).toBe(201);
+    embedder.delayMs = 0;
+    expect((await create('alice', { title: 'd', content: 'x' })).status).toBe(201);
+    expect(db.documents.map((d) => d.title).sort()).toEqual(['a', 'b', 'd']);
+  });
+
+  it("does not count another user's writes", async () => {
+    await app.close();
+    app = await build(1000, 1);
+    embedder.delayMs = 200;
+    const running = Promise.resolve(create('alice', { title: 'a', content: 'x' }));
+    await new Promise((r) => setTimeout(r, 80));
+    expect((await create('bob', { title: 'b', content: 'x' })).status).toBe(201);
+    await running;
   });
 });
 

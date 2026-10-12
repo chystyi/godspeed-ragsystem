@@ -64,14 +64,27 @@ export class ChatController {
 
   @Post(':id/messages')
   @HttpCode(201)
-  send(
+  async send(
     @CurrentUser() user: AuthUser,
     @Param('id', conversationId) id: string,
     @Body(new ZodPipe(sendMessageSchema)) body: SendMessageDto,
+    @Res({ passthrough: true }) response: Response,
   ): Promise<SendMessageResult> {
     // After validation, so requests that are rejected as invalid do not use up the quota.
     this.questions.enforce(user.id);
-    return this.chat.ask(user, id, body.content, body.model);
+    // The same limit as for streams: every answer holds a paid model call open.
+    const release = this.streams.require(user.id);
+    const cancelled = new AbortController();
+    const onClose = () => {
+      if (!response.writableFinished) cancelled.abort();
+    };
+    response.on('close', onClose);
+    try {
+      return await this.chat.ask(user, id, body.content, body.model, cancelled.signal);
+    } finally {
+      response.off('close', onClose);
+      release();
+    }
   }
 
   /**

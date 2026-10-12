@@ -27,11 +27,18 @@ describe.skipIf(!process.env.RUN_LIVE_E2E)('chat end to end (live)', () => {
   const ask = (user: LiveUser, id: string, content: string) =>
     http().post(`/api/conversations/${id}/messages`).set(auth(user)).send({ content });
 
-  beforeAll(async () => {
+  const previousSetting = process.env.CHAT_ALLOW_GENERAL_ANSWERS;
+  async function startApp(allowGeneral: boolean): Promise<INestApplication> {
+    process.env.CHAT_ALLOW_GENERAL_ANSWERS = String(allowGeneral); // read when the module is built
     const moduleRef = await Test.createTestingModule({ imports: [AppModule] }).compile();
-    app = moduleRef.createNestApplication({ bodyParser: false, logger: false });
-    configureApp(app);
-    await app.init();
+    const instance = moduleRef.createNestApplication({ bodyParser: false, logger: false });
+    configureApp(instance);
+    await instance.init();
+    return instance;
+  }
+
+  beforeAll(async () => {
+    app = await startApp(false); // the strict behavior; the general mode has a test of its own below
     alice = await users.signUp('alice');
     bob = await users.signUp('bob');
     const docs = [
@@ -63,6 +70,8 @@ describe.skipIf(!process.env.RUN_LIVE_E2E)('chat end to end (live)', () => {
   }, 120000);
 
   afterAll(async () => {
+    if (previousSetting === undefined) delete process.env.CHAT_ALLOW_GENERAL_ANSWERS;
+    else process.env.CHAT_ALLOW_GENERAL_ANSWERS = previousSetting;
     await users.cleanup();
     await app?.close();
   }, 60000);
@@ -151,5 +160,23 @@ describe.skipIf(!process.env.RUN_LIVE_E2E)('chat end to end (live)', () => {
     const own = (await http().post('/api/conversations').set(auth(bob)).send({})).body.id;
     const res = await ask(bob, own, 'How do I make my home wifi safer?');
     expect(res.body.assistantMessage.content).toBe(NO_ANSWER_TEXT); // bob has no documents
+    expect(res.body.assistantMessage.sources).toEqual([]);
+  }, 60000);
+
+  it('answers a greeting and a general question when nothing in the documents applies (general mode)', async () => {
+    const general = await startApp(true);
+    try {
+      const conversation = (await request(general.getHttpServer()).post('/api/conversations').set(auth(bob)).send({})).body.id;
+      const res = await request(general.getHttpServer())
+        .post(`/api/conversations/${conversation}/messages`)
+        .set(auth(bob))
+        .send({ content: 'Hello! Please reply with one short friendly sentence, in French.' });
+      expect(res.status).toBe(201);
+      expect(res.body.assistantMessage.content).not.toBe(NO_ANSWER_TEXT);
+      expect(res.body.assistantMessage.content.length).toBeGreaterThan(5);
+      expect(res.body.assistantMessage.sources).toEqual([]);
+    } finally {
+      await general.close();
+    }
   }, 60000);
 });

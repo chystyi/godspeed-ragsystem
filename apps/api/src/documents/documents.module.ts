@@ -1,5 +1,5 @@
 import { Module } from '@nestjs/common';
-import { DOCUMENT_WRITE_LIMITER, SlidingWindowLimiter } from '../http/rate-limiter.js';
+import { ConcurrencyLimiter, DOCUMENT_CONCURRENCY_LIMITER, DOCUMENT_WRITE_LIMITER, SlidingWindowLimiter } from '../http/rate-limiter.js';
 import { SUPABASE_CONFIG, type SupabaseConfig } from '../supabase/supabase.config.js';
 import { loadDocumentLimits } from './documents.config.js';
 import { DocumentsController } from './documents.controller.js';
@@ -16,6 +16,10 @@ import { SupabaseDocumentsRepositoryFactory } from './supabase-documents.reposit
     {
       provide: DOCUMENT_WRITE_LIMITER,
       useFactory: () => new SlidingWindowLimiter(loadDocumentLimits(process.env).writesPerMinute, 60_000),
+    },
+    {
+      provide: DOCUMENT_CONCURRENCY_LIMITER,
+      useFactory: () => new ConcurrencyLimiter(loadDocumentLimits(process.env).maxConcurrentWrites),
     },
     {
       provide: DOCUMENTS_REPOSITORY_FACTORY,

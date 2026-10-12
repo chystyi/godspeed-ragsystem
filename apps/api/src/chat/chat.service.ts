@@ -110,12 +110,21 @@ export class ChatService {
     conversationId: string,
     question: string,
     model?: string,
+    signal?: AbortSignal,
   ): Promise<SendMessageResult> {
     this.checkModel(model);
-    const context = (await this.prepare(user, conversationId, question)) as AskContext; // no signal: never null
+    const context = await this.prepare(user, conversationId, question, signal);
+    if (!context) throw new DOMException('the client left', 'AbortError'); // nobody is waiting for the answer
     let answer = NO_ANSWER_TEXT;
     if (context.answerable) {
-      answer = (await this.chat.complete(context.messages, { temperature: ANSWER_TEMPERATURE, model })).content;
+      answer = (
+        await this.chat.complete(context.messages, {
+          temperature: ANSWER_TEMPERATURE,
+          maxTokens: this.config.maxAnswerTokens,
+          model,
+          signal,
+        })
+      ).content;
     }
     return this.save(context, question, answer);
   }
@@ -151,7 +160,12 @@ export class ChatService {
       yield { type: 'delta', text: answer };
     } else {
       const parts = this.chat
-        .stream(context.messages, { temperature: ANSWER_TEMPERATURE, signal, model })
+        .stream(context.messages, {
+          temperature: ANSWER_TEMPERATURE,
+          maxTokens: this.config.maxAnswerTokens,
+          signal,
+          model,
+        })
         [Symbol.asyncIterator]();
       try {
         // Wait for the first part before announcing anything: a provider that rejects the
@@ -187,7 +201,9 @@ export class ChatService {
   ): Promise<AskContext | null> {
     const repository = this.repositories.forUser(user.token);
     const conversation = await this.requireConversation(repository, conversationId);
-    const history = await repository.recentMessages(conversationId, this.config.historyMessages);
+    // Messages come in pairs (question, answer): an odd number would cut a pair in half.
+    const wanted = Math.ceil(this.config.historyMessages / 2) * 2;
+    const history = await repository.recentMessages(conversationId, wanted);
     const turns: HistoryTurn[] = history.map(({ role, content }) => ({ role, content }));
 
     if (signal?.aborted) return null;

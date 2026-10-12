@@ -46,6 +46,18 @@ describe('loadAiConfig', () => {
     });
   });
 
+  it('does not send the chat key to another embedding provider unless told to', () => {
+    const error = catchError(() => loadAiConfig({ ...base, AI_EMBEDDING_BASE_URL: 'https://embeddings.example.com/v1' }));
+    expect(error).toBeInstanceOf(ConfigError);
+    expect((error as Error).message).toContain('AI_EMBEDDING_API_KEY');
+    expect((error as Error).message).not.toContain('sk-secret-value');
+  });
+
+  it('still shares the key when the embedding address is the same provider', () => {
+    const config = loadAiConfig({ ...base, AI_EMBEDDING_BASE_URL: 'https://openrouter.ai/api/v1/' });
+    expect(config.embeddings.apiKey).toBe('sk-secret-value');
+  });
+
   it('names every missing or invalid variable, once', () => {
     const error = catchError(() => loadAiConfig({ AI_BASE_URL: 'not a url', AI_API_KEY: '' }));
     expect(error).toBeInstanceOf(ConfigError);

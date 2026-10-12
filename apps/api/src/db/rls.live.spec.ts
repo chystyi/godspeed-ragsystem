@@ -350,6 +350,60 @@ describe.skipIf(!live)('database isolation and retrieval (live)', () => {
     });
   });
 
+  describe('direct calls cannot store oversized or unlimited data', () => {
+    it('rejects a chunk over 2000 characters and a content hash over 128', async () => {
+      const big = [{ index: 0, content: 'x'.repeat(2001), tokenCount: 1, embedding: axis(0) }];
+      expect((await indexAs(alice, docId, 'h', big)).error?.code).toBe('23514');
+      expect((await indexAs(alice, docId, 'h'.repeat(129))).error?.code).toBe('23514');
+    });
+
+    it('marks a document pending when its text is edited directly, and not when only tags change', async () => {
+      expect((await indexAs(alice, docId, 'fresh')).error).toBeNull();
+      await alice.from('documents').update({ tags: ['same'] }).eq('id', docId);
+      expect((await alice.from('documents').select('indexing_status').eq('id', docId).single()).data?.indexing_status).toBe('indexed');
+      await alice.from('documents').update({ content: 'secret plans, edited' }).eq('id', docId);
+      expect((await alice.from('documents').select('indexing_status').eq('id', docId).single()).data?.indexing_status).toBe('pending');
+    });
+
+    it('applies the checks of the API: no blank texts, only tidy tags', async () => {
+      expect((await alice.from('documents').insert({ title: '   ', content: 'x' })).error?.code).toBe('23514');
+      expect((await alice.from('documents').insert({ title: 't', content: '  ' })).error?.code).toBe('23514');
+      expect((await alice.from('conversations').insert({ title: '  ' })).error?.code).toBe('23514');
+      for (const tags of [['Upper'], [' padded'], ['dup', 'dup']]) {
+        expect((await alice.from('documents').update({ tags }).eq('id', docId)).error?.code, JSON.stringify(tags)).toBe('23514');
+      }
+    });
+
+    const messagesOutcome = (userId: string, conversations: number, perConversation: number, target: number) => `
+      begin;
+      insert into auth.users (id, aud, role, email) values ('${userId}', 'authenticated', 'authenticated', '${userId}@example.test');
+      insert into public.conversations (id, user_id, title)
+        select ('${userId.slice(0, -2)}' || lpad(g::text, 2, '0'))::uuid, '${userId}', 'c' || g from generate_series(1, ${conversations + 1}) g;
+      insert into public.messages (conversation_id, user_id, role, content)
+        select ('${userId.slice(0, -2)}' || lpad(c::text, 2, '0'))::uuid, '${userId}', 'user', 'm'
+          from generate_series(1, ${conversations}) c, generate_series(1, ${perConversation}) m;
+      create temp table outcome (code text) on commit drop;
+      do $$ begin
+        insert into public.messages (conversation_id, user_id, role, content)
+          values (('${userId.slice(0, -2)}' || lpad('${target}', 2, '0'))::uuid, '${userId}', 'user', 'one too many');
+        insert into outcome values ('inserted');
+      exception when sqlstate 'P0004' then
+        insert into outcome values ('P0004');
+      end $$;
+      select code from outcome;
+      rollback;`;
+
+    it('refuses the 201st message of a conversation', async () => {
+      const rows = await sql(messagesOutcome('00000000-0000-4000-8000-0000000000d1', 1, 200, 1));
+      expect(rows).toEqual([{ code: 'P0004' }]);
+    }, 60000);
+
+    it('refuses the 2001st message of a user across conversations', async () => {
+      const rows = await sql(messagesOutcome('00000000-0000-4000-8000-0000000000d2', 10, 200, 11));
+      expect(rows).toEqual([{ code: 'P0004' }]);
+    }, 60000);
+  });
+
   describe('indexing results are tied to the version of the text', () => {
     it('refuses a result for text that has changed since (a stale embedding run)', async () => {
       await indexAs(alice, docId, 'h-current');

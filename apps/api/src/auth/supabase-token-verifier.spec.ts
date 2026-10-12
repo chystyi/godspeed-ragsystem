@@ -27,7 +27,7 @@ function verifier(keys: object[] = [KEY]) {
 beforeAll(() => Logger.overrideLogger(false));
 beforeEach(() => {
   clock = { now: 1_000_000 };
-  getClaims.mockReset().mockResolvedValue({ data: { claims: { sub: 'user-1' } }, error: null });
+  getClaims.mockReset().mockResolvedValue({ data: { claims: { sub: 'user-1', role: 'authenticated' } }, error: null });
   vi.mocked(createClient).mockReset();
   vi.mocked(createClient).mockReturnValue({ auth: { getClaims } } as never);
 });
@@ -57,6 +57,20 @@ describe('SupabaseTokenVerifier', () => {
     for (let i = 0; i < 50; i++) await v.verify(goodToken());
     expect(jwksFetch).toHaveBeenCalledTimes(1);
     expect(jwksFetch).toHaveBeenCalledWith('https://example.supabase.co/auth/v1/.well-known/jwks.json', expect.anything());
+  });
+
+  it('fetches the keys once even when many requests arrive at the same moment', async () => {
+    const v = verifier();
+    await Promise.all(Array.from({ length: 30 }, () => v.verify(goodToken())));
+    expect(jwksFetch).toHaveBeenCalledTimes(1);
+  });
+
+  it('accepts only tokens of the authenticated role', async () => {
+    const v = verifier();
+    for (const role of ['anon', 'service_role', undefined]) {
+      getClaims.mockResolvedValueOnce({ data: { claims: { sub: 'user-1', role } }, error: null });
+      expect(await v.verify(goodToken()), String(role)).toBeNull();
+    }
   });
 
   it('refetches the keys after the cache expires', async () => {

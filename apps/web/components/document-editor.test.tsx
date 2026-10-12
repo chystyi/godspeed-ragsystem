@@ -82,4 +82,26 @@ describe("document editor", () => {
     render(<ExistingDocumentEditor id="x" />);
     expect(screen.getByRole("alert").textContent).toContain("cannot be searched yet");
   });
+
+  it("shows the newer indexing state when the document is refreshed in the background", () => {
+    mocks.doc = doc({ indexingStatus: "pending", indexedAt: null });
+    const { rerender } = render(<ExistingDocumentEditor id="x" />);
+    expect(screen.getByText("Indexing")).toBeTruthy();
+    mocks.doc = doc({ indexingStatus: "indexed", updatedAt: "2026-10-10T10:05:00.000Z" });
+    rerender(<ExistingDocumentEditor id="x" />);
+    expect(screen.queryByText("Indexing")).toBeNull();
+    expect(screen.getByText("Searchable")).toBeTruthy();
+  });
+
+  it("adopts a text changed elsewhere while the form is untouched, but never overwrites typing", () => {
+    const { rerender } = render(<ExistingDocumentEditor id="x" />);
+    mocks.doc = doc({ content: "Changed in another tab", updatedAt: "2026-10-10T10:05:00.000Z" });
+    rerender(<ExistingDocumentEditor id="x" />);
+    expect(text().value).toBe("Changed in another tab");
+
+    fireEvent.change(text(), { target: { value: "my own edit" } });
+    mocks.doc = doc({ content: "Changed again elsewhere", updatedAt: "2026-10-10T10:06:00.000Z", indexingStatus: "pending" });
+    rerender(<ExistingDocumentEditor id="x" />);
+    expect(text().value).toBe("my own edit");
+  });
 });

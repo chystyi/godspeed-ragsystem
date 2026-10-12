@@ -132,6 +132,31 @@ function DocumentForm({ saved: initialSaved, initial, onSave, onReindex, onDelet
 
   const dirty = saved ? isDirty(values, saved) : values.title !== "" || values.content !== "" || values.tags !== "";
 
+  // The document is refreshed in the background (indexing finished, or it was edited elsewhere).
+  // An untouched form takes the new version; one with typing in it keeps the text and only learns
+  // how indexing went.
+  const [seen, setSeen] = useState(initialSaved);
+  if (initialSaved !== seen) {
+    setSeen(initialSaved);
+    if (initialSaved && initialSaved !== saved) {
+      if (!dirty) {
+        setSaved(initialSaved);
+        setValues(initial);
+      } else {
+        setSaved((current) =>
+          current
+            ? {
+                ...current,
+                indexingStatus: initialSaved.indexingStatus,
+                indexingError: initialSaved.indexingError,
+                indexedAt: initialSaved.indexedAt,
+              }
+            : current,
+        );
+      }
+    }
+  }
+
   // Warn before the tab is closed with unsaved text.
   useEffect(() => {
     if (!dirty) return;
