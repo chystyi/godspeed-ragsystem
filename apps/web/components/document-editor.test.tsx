@@ -55,6 +55,17 @@ describe("document editor", () => {
     expect(text().value).toBe("first edit, and more");
   });
 
+  it("saves with Cmd+S or Ctrl+S", async () => {
+    mocks.update.mockResolvedValue(doc({ content: "edit" }));
+    render(<ExistingDocumentEditor id="x" />);
+    fireEvent.change(text(), { target: { value: "edit" } });
+    fireEvent.keyDown(text(), { key: "s", metaKey: true });
+    await waitFor(() => expect(mocks.update).toHaveBeenCalledTimes(1));
+    fireEvent.change(text(), { target: { value: "edit again" } });
+    fireEvent.keyDown(text(), { key: "S", ctrlKey: true });
+    await waitFor(() => expect(mocks.update).toHaveBeenCalledTimes(2));
+  });
+
   it("does not send a second save while one is running", async () => {
     mocks.update.mockReturnValue(new Promise(() => {}));
     render(<ExistingDocumentEditor id="x" />);

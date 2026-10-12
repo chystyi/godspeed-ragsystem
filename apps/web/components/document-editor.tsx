@@ -254,6 +254,25 @@ function DocumentForm({ saved: initialSaved, initial, onSave, onReindex, onDelet
     }
   }
 
+  // Cmd/Ctrl+S saves. Listening on the form from here (not through a prop) keeps the form itself
+  // free of handlers; the newest `save` is used each time.
+  const saveRef = useRef(save);
+  useEffect(() => {
+    saveRef.current = save;
+  });
+  useEffect(() => {
+    const form = formRef.current;
+    if (!form) return;
+    const onKeyDown = (event: KeyboardEvent) => {
+      if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "s") {
+        event.preventDefault();
+        void saveRef.current();
+      }
+    };
+    form.addEventListener("keydown", onKeyDown);
+    return () => form.removeEventListener("keydown", onKeyDown);
+  }, []);
+
   return (
     <form
       ref={formRef}
@@ -262,12 +281,6 @@ function DocumentForm({ saved: initialSaved, initial, onSave, onReindex, onDelet
       onSubmit={(event) => {
         event.preventDefault();
         void save();
-      }}
-      onKeyDown={(event) => {
-        if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "s") {
-          event.preventDefault();
-          void save();
-        }
       }}
     >
       <Link href="/documents" className="inline-flex items-center gap-1.5 text-sm text-muted hover:text-ink md:hidden">
@@ -323,6 +336,8 @@ function DocumentForm({ saved: initialSaved, initial, onSave, onReindex, onDelet
         onChange={change("title")}
         error={errors.title}
         maxLength={LIMITS.title + 50}
+        // A new document starts with the cursor in the title; editing an existing one does not steal focus.
+        // eslint-disable-next-line jsx-a11y/no-autofocus
         autoFocus={!saved}
         autoComplete="off"
       />
